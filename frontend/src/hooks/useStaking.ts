@@ -9,6 +9,10 @@ import { useWallet } from './useWallet';
 // be loadable by getAccount() before their first Soroban interaction.
 const SIMULATION_SOURCE = 'GDWXTIIROGCVBSNQMBJFH6HOWQ4YSRVMKSUS53CH6MP56WSWD6J4VZ5N';
 
+// Hardcoded mainnet sXLM token contract ID — do NOT use CONTRACTS.sxlmToken here
+// because VITE_SXLM_TOKEN_CONTRACT_ID may be misconfigured in the deployment env.
+const SXLM_TOKEN_CONTRACT = 'CCGFHMW3NZD5Z7ATHYHZSEG6ABCJADUHP5HIAWFPR37CP4VGNEDQO7FJ';
+
 interface StakingState {
   isStaking: boolean;
   isUnstaking: boolean;
@@ -85,38 +89,27 @@ export function useStaking(): UseStakingReturn {
       const exchangeRate: number = apiRes?.data?.exchangeRate ?? 1;
 
       // Read sXLM balance DIRECTLY from the on-chain token contract via Soroban RPC.
-      // This bypasses any backend env-var misconfiguration and is always authoritative.
+      // Uses SXLM_TOKEN_CONTRACT constant (not CONTRACTS.sxlmToken) to avoid env-var misconfiguration.
       let sxlmBalance = 0;
       try {
-        console.log('[sXLM] Starting balance fetch for', publicKey);
-        console.log('[sXLM] RPC:', NETWORK.sorobanRpcUrl, '| Contract:', CONTRACTS.sxlmToken);
         const soroban = new SorobanRpc.Server(NETWORK.sorobanRpcUrl);
         const account = await soroban.getAccount(SIMULATION_SOURCE);
-        console.log('[sXLM] Got simulation source account, seq:', account.sequenceNumber());
         const tx = new TransactionBuilder(account, {
           fee: BASE_FEE,
           networkPassphrase: NETWORK.networkPassphrase,
         })
           .addOperation(
-            new Contract(CONTRACTS.sxlmToken).call('balance', new Address(publicKey).toScVal())
+            new Contract(SXLM_TOKEN_CONTRACT).call('balance', new Address(publicKey).toScVal())
           )
           .setTimeout(30)
           .build();
         const sim = await soroban.simulateTransaction(tx);
-        console.log('[sXLM] Simulation result:', JSON.stringify(sim).slice(0, 300));
-        const isSuccess = SorobanRpc.Api.isSimulationSuccess(sim);
-        console.log('[sXLM] isSuccess:', isSuccess, '| has result:', !!(sim as { result?: unknown }).result);
-        if (isSuccess && (sim as { result?: { retval: unknown } }).result) {
-          const raw = scValToNative((sim as { result: { retval: Parameters<typeof scValToNative>[0] } }).result.retval);
-          console.log('[sXLM] Raw balance value:', raw, typeof raw);
-          sxlmBalance = Number(raw) / 1e7;
-          console.log('[sXLM] sXLM balance:', sxlmBalance);
+        if (SorobanRpc.Api.isSimulationSuccess(sim) && sim.result) {
+          sxlmBalance = Number(scValToNative(sim.result.retval)) / 1e7;
         }
-      } catch (sorobanErr) {
-        console.error('[sXLM] Soroban simulation failed:', sorobanErr);
+      } catch {
         // Fall back to backend value if Soroban read fails
         sxlmBalance = apiRes?.data?.sxlmBalance ?? 0;
-        console.log('[sXLM] Backend fallback sxlmBalance:', sxlmBalance, '| apiRes:', apiRes?.data);
       }
 
       setBalance({
