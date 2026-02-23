@@ -65,7 +65,8 @@ export const config = {
 
   admin: {
     secretKey: requireEnv("ADMIN_SECRET_KEY", ""),
-    publicKey: requireEnv("ADMIN_PUBLIC_KEY", ""),
+    // Fallback to known active mainnet account used for read-only Soroban simulations
+    publicKey: requireEnv("ADMIN_PUBLIC_KEY", "GDWXTIIROGCVBSNQMBJFH6HOWQ4YSRVMKSUS53CH6MP56WSWD6J4VZ5N"),
   },
 
   jwt: {
