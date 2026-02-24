@@ -155,6 +155,14 @@ export default function Lending() {
             ))}
           </div>
 
+          {/* Step 1 reminder: must deposit before borrow/withdraw/repay */}
+          {(activeTab === 'borrow' || activeTab === 'withdraw' || activeTab === 'repay') && position.sxlmDeposited === 0 && (
+            <div className="rounded-lg p-3 text-xs" style={{ background: 'rgba(245,207,0,0.06)', border: '1px solid rgba(245,207,0,0.2)' }}>
+              <p style={{ color: '#F5CF00' }} className="font-medium mb-1">Step 1 required: Deposit sXLM first</p>
+              <p className="text-gray-400">You have no collateral deposited. Switch to the <strong className="text-white">Deposit</strong> tab, deposit your sXLM, then come back to borrow.</p>
+            </div>
+          )}
+
           {activeTab === 'liquidate' ? (
             <div>
               <label className="text-xs text-gray-400 mb-1 block">Borrower Address to Liquidate</label>
@@ -174,6 +182,9 @@ export default function Lending() {
               <label className="text-xs text-gray-400 mb-1 block">
                 {activeTab === 'deposit' || activeTab === 'withdraw' ? 'sXLM Amount' : 'XLM Amount'}
               </label>
+              {activeTab === 'borrow' && position.maxBorrow > 0 && (
+                <p className="text-xs text-gray-500 mb-1">Max: {position.maxBorrow.toFixed(4)} XLM</p>
+              )}
               <input
                 type="number"
                 value={amount}
@@ -199,7 +210,11 @@ export default function Lending() {
           {isConnected ? (
             <button
               onClick={handleSubmit}
-              disabled={isSubmitting || (activeTab === 'liquidate' ? !borrowerAddress : (!amount || parseFloat(amount) <= 0))}
+              disabled={
+                isSubmitting ||
+                (activeTab === 'liquidate' ? !borrowerAddress : (!amount || parseFloat(amount) <= 0)) ||
+                (['borrow', 'withdraw', 'repay'].includes(activeTab) && position.sxlmDeposited === 0)
+              }
               className="w-full py-3 rounded-xl font-semibold hover:opacity-90 transition-opacity disabled:opacity-40 text-black" style={{ background: '#F5CF00' }}
             >
               {isSubmitting ? 'Processing...' : buttonLabels[activeTab]}
