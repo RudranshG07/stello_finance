@@ -188,7 +188,10 @@ export default function WithdrawCard() {
                   style={{ background: '#080808', border: '1px solid #1e1e1e' }}
                 >
                   <div>
-                    <p className="text-sm text-white">{(Number(w.amount) / 1e7).toFixed(2)} XLM</p>
+                    <p className="text-sm text-white">{(Number(w.amount) / 1e7).toFixed(2)} sXLM</p>
+                    <p className="text-[10px] mt-0.5 text-neutral-500">
+                      ≈ {(Number(w.amount) / 1e7 * stats.exchangeRate).toFixed(2)} XLM
+                    </p>
                     <p className="text-[10px] mt-0.5" style={{ color: ready ? '#F5CF00' : '#525252' }}>
                       {ready ? 'Ready to claim' : `Unlocks ${new Date(w.unlockTime).toLocaleDateString()}`}
                     </p>
