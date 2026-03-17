@@ -68,6 +68,8 @@ model ProtocolMetrics {
   tvlUsd            Float
   avgValidatorScore Float
   protocolFees      BigInt   @default(0)
+  xlmReserve        BigInt   @default(0)   // LP pool XLM reserve
+  sxlmReserve       BigInt   @default(0)   // LP pool sXLM reserve
   updatedAt         DateTime @default(now())
 
   @@map("protocol_metrics")
@@ -123,4 +125,27 @@ model LiquidationEvent {
   @@index([borrower])
   @@index([liquidator])
   @@map("liquidation_events")
+}
+
+model TwapSnapshot {
+  id            Int      @id @default(autoincrement())
+  price         Float    // sXLM price in XLM units (with TWAP protection)
+  windowSeconds Int      // seconds over which TWAP was calculated
+  timestamp     DateTime @default(now())
+
+  @@index([timestamp])
+  @@map("twap_snapshots")
+}
+
+model MiningPosition {
+  id            String   @id @default(cuid())
+  wallet        String   @unique
+  lpTokens      BigInt   // LP tokens staked
+  rewardDebt    BigInt   @default(0) // Debt for reward distribution
+  totalClaimed  BigInt   @default(0) // Total rewards claimed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([wallet])
+  @@map("mining_positions")
 }

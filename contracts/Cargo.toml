@@ -7,6 +7,7 @@ members = [
     "lp-pool",
     "governance",
     "bridge",
+    "liquidity-mining",
 ]
 
 [workspace.dependencies]

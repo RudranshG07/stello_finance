@@ -24,6 +24,10 @@ pub enum DataKey {
     LpBalance(Address),
     ProtocolFeeBps,
     AccruedProtocolFees,
+    // TWAP Oracle accumulators
+    Price0CumulativeLast,      // cumulative price of sXLM in XLM
+    Price1CumulativeLast,      // cumulative price of XLM in sXLM
+    BlockTimestampLast,        // last timestamp when accumulators were updated
 }
 
 // --- Storage helpers ---
@@ -89,6 +93,46 @@ fn write_lp_balance(env: &Env, user: &Address, val: i128) {
         .extend_ttl(&key, LP_LIFETIME_THRESHOLD, LP_BUMP_AMOUNT);
 }
 
+/// Update cumulative price accumulators for TWAP.
+/// Called after every state update (swaps, liquidity changes).
+fn update_price_cumulative(env: &Env, reserve_xlm: i128, reserve_sxlm: i128) {
+    let timestamp: u64 = env.ledger().timestamp();
+    let last_timestamp: u64 = env.storage().instance()
+        .get(&DataKey::BlockTimestampLast)
+        .unwrap_or(0);
+    
+    let elapsed = timestamp.saturating_sub(last_timestamp);
+    
+    // Only update if time has passed and reserves are valid
+    if elapsed > 0 && reserve_xlm > 0 && reserve_sxlm > 0 {
+        // Price0 = sXLM per XLM (reserve_sxlm / reserve_xlm, scaled by 1e7 for precision)
+        let price0 = (reserve_sxlm as i128 * 10_000_000) / (reserve_xlm as i128);
+        
+        // Price1 = XLM per sXLM (reserve_xlm / reserve_sxlm, scaled by 1e7)
+        let price1 = (reserve_xlm as i128 * 10_000_000) / (reserve_sxlm as i128);
+        
+        let price0_cum_last: i128 = env.storage().instance()
+            .get(&DataKey::Price0CumulativeLast)
+            .unwrap_or(0);
+        let price1_cum_last: i128 = env.storage().instance()
+            .get(&DataKey::Price1CumulativeLast)
+            .unwrap_or(0);
+        
+        let elapsed_i128 = elapsed as i128;
+        
+        env.storage().instance().set(
+            &DataKey::Price0CumulativeLast,
+            &(price0_cum_last + price0 * elapsed_i128),
+        );
+        env.storage().instance().set(
+            &DataKey::Price1CumulativeLast,
+            &(price1_cum_last + price1 * elapsed_i128),
+        );
+    }
+    
+    env.storage().instance().set(&DataKey::BlockTimestampLast, &timestamp);
+}
+
 /// Integer square root using Newton's method.
 fn isqrt(n: i128) -> i128 {
     if n <= 0 {
@@ -127,6 +171,12 @@ impl LpPoolContract {
         env.storage().instance().set(&DataKey::FeeBps, &(fee_bps as i128));
         write_i128(&env, &DataKey::ProtocolFeeBps, 5); // 0.05% of swap input
         write_i128(&env, &DataKey::AccruedProtocolFees, 0);
+        
+        // Initialize TWAP accumulators
+        write_i128(&env, &DataKey::Price0CumulativeLast, 0);
+        write_i128(&env, &DataKey::Price1CumulativeLast, 0);
+        env.storage().instance().set(&DataKey::BlockTimestampLast, &env.ledger().timestamp());
+        
         extend_instance(&env);
     }
 
@@ -185,6 +235,9 @@ impl LpPoolContract {
         write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm + actual_sxlm);
         write_i128(&env, &DataKey::TotalLpSupply, total_lp + lp_minted);
 
+        // Update TWAP accumulators AFTER reserve changes
+        update_price_cumulative(&env, reserve_xlm + actual_xlm, reserve_sxlm + actual_sxlm);
+
         let user_lp = read_lp_balance(&env, &user);
         write_lp_balance(&env, &user, user_lp + lp_minted);
 
@@ -219,6 +272,9 @@ impl LpPoolContract {
         write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm - sxlm_out);
         write_i128(&env, &DataKey::TotalLpSupply, total_lp - lp_amount);
         write_lp_balance(&env, &user, user_lp - lp_amount);
+
+        // Update TWAP accumulators AFTER reserve changes
+        update_price_cumulative(&env, reserve_xlm - xlm_out, reserve_sxlm - sxlm_out);
 
         // Transfer tokens out
         let native = read_native_token(&env);
@@ -264,8 +320,13 @@ impl LpPoolContract {
         let protocol_cut = total_fee * protocol_fee_bps / fee_bps;
 
         // Reserve gets full amount MINUS protocol cut
-        write_i128(&env, &DataKey::ReserveXlm, reserve_xlm + xlm_amount - protocol_cut);
-        write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm - sxlm_out);
+        let new_reserve_xlm = reserve_xlm + xlm_amount - protocol_cut;
+        let new_reserve_sxlm = reserve_sxlm - sxlm_out;
+        write_i128(&env, &DataKey::ReserveXlm, new_reserve_xlm);
+        write_i128(&env, &DataKey::ReserveSxlm, new_reserve_sxlm);
+
+        // Update TWAP accumulators AFTER reserve changes
+        update_price_cumulative(&env, new_reserve_xlm, new_reserve_sxlm);
 
         // Accumulate protocol fees
         let accrued = read_i128(&env, &DataKey::AccruedProtocolFees);
@@ -303,8 +364,13 @@ impl LpPoolContract {
         token::Client::new(&env, &native).transfer(&env.current_contract_address(), &user, &xlm_out);
 
         // Update reserves
-        write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm + sxlm_amount);
-        write_i128(&env, &DataKey::ReserveXlm, reserve_xlm - xlm_out);
+        let new_reserve_sxlm = reserve_sxlm + sxlm_amount;
+        let new_reserve_xlm = reserve_xlm - xlm_out;
+        write_i128(&env, &DataKey::ReserveSxlm, new_reserve_sxlm);
+        write_i128(&env, &DataKey::ReserveXlm, new_reserve_xlm);
+
+        // Update TWAP accumulators AFTER reserve changes
+        update_price_cumulative(&env, new_reserve_xlm, new_reserve_sxlm);
 
         env.events().publish(
             (soroban_sdk::symbol_short!("swap"),),
@@ -393,6 +459,20 @@ impl LpPoolContract {
     pub fn total_lp_supply(env: Env) -> i128 {
         extend_instance(&env);
         read_i128(&env, &DataKey::TotalLpSupply)
+    }
+
+    /// Returns TWAP data: (price0_cumulative, price1_cumulative, block_timestamp_last)
+    /// Used by off-chain oracle to calculate time-weighted average prices.
+    /// Price0 = cumulative sXLM per XLM (scaled by 1e7)
+    /// Price1 = cumulative XLM per sXLM (scaled by 1e7)
+    pub fn get_twap_data(env: Env) -> (i128, i128, u64) {
+        extend_instance(&env);
+        let p0 = read_i128(&env, &DataKey::Price0CumulativeLast);
+        let p1 = read_i128(&env, &DataKey::Price1CumulativeLast);
+        let timestamp: u64 = env.storage().instance()
+            .get(&DataKey::BlockTimestampLast)
+            .unwrap_or(0);
+        (p0, p1, timestamp)
     }
 }
 

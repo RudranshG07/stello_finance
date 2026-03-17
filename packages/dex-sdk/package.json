@@ -1,0 +1,46 @@
+{
+  "name": "@stello/dex-sdk",
+  "version": "0.1.0",
+  "description": "SDK for Stello Finance DEX integration",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts",
+    "dev": "tsup src/index.ts --format esm --dts --watch",
+    "lint": "eslint src --ext .ts",
+    "test": "vitest"
+  },
+  "peerDependencies": {
+    "@stellar/stellar-sdk": "^11.0.0 || ^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0",
+    "tsup": "^8.0.0"
+  },
+  "keywords": [
+    "stellar",
+    "dex",
+    "swap",
+    "liquidity",
+    "oracle",
+    "twap",
+    "soroban"
+  ],
+  "author": "Stello Finance",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stello-finance/stello.git"
+  }
+}
