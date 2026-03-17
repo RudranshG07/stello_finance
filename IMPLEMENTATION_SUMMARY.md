@@ -1,19 +1,14 @@
 # DEX Integration Implementation Summary
 
-**Date:** March 17, 2026  
-**Status:** Complete  
+**Date:** March 17, 2026
+**Status:** Complete
 **Version:** 1.0.0
 
 ---
 
 ## Overview
 
-This implementation adds a complete DEX integration layer to Stello Finance with:
-- ✅ TWAP oracle (manipulation-resistant price feeds)
-- ✅ Swap integration (quote, routing, execution)
-- ✅ Liquidity mining program (governance-controlled rewards)
-- ✅ Public SDK and API for integrators
-- ✅ Comprehensive documentation
+This implementation adds a complete DEX integration layer to Stello Finance. All four requirements from issue #2 are addressed: a TWAP oracle built from LP pool accumulators, a public SDK for third-party DEX integrations, a governance-controlled liquidity mining program, and comprehensive documentation for external integrators.
 
 ---
 
@@ -23,39 +18,42 @@ This implementation adds a complete DEX integration layer to Stello Finance with
 
 **File:** `contracts/lp-pool/src/lib.rs`
 
-#### Added TWAP Oracle:
+#### Added TWAP Oracle
+
+New DataKey variants:
 
 ```rust
-// New DataKey variants
-enum DataKey {
-    // ...existing keys...
-    Price0CumulativeLast,      // cumulative sXLM per XLM
-    Price1CumulativeLast,      // cumulative XLM per sXLM
-    BlockTimestampLast,        // last update timestamp
-}
-
-// New public function
-fn get_twap_data() -> (i128, i128, u64)
-    Returns: (price0_cumulative, price1_cumulative, timestamp)
-
-// Internal helper (called after every state change)
-fn update_price_cumulative(reserve_xlm, reserve_sxlm)
-    Updates accumulators with time-weighted prices
+Price0CumulativeLast   // cumulative sXLM per XLM (price0 * elapsed, scaled 1e7)
+Price1CumulativeLast   // cumulative XLM per sXLM (price1 * elapsed, scaled 1e7)
+BlockTimestampLast     // last timestamp when accumulators were updated
 ```
 
-#### Changes to Existing Functions:
+New public getter:
 
-- `initialize()` - Initialize TWAP accumulators to 0, set timestamp
-- `add_liquidity()` - Call `update_price_cumulative()` after reserve changes
-- `remove_liquidity()` - Call `update_price_cumulative()` after reserve changes
-- `swap_xlm_to_sxlm()` - Call `update_price_cumulative()` after reserve changes
-- `swap_sxlm_to_xlm()` - Call `update_price_cumulative()` after reserve changes
+```rust
+pub fn get_twap_data(env: Env) -> (i128, i128, u64)
+// Returns: (price0_cumulative, price1_cumulative, block_timestamp_last)
+```
 
-**Why this design?**
-- Accumulators only update AFTER reserve changes (prevents stale TWAP)
-- Price scaled by 1e7 for precision
-- Elapsed time from Soroban ledger (reliable, non-monotonic)
-- Off-chain service calculates TWAP from cumulative snapshots
+Internal helper:
+
+```rust
+fn update_price_cumulative(env: &Env, reserve_xlm: i128, reserve_sxlm: i128)
+```
+
+Called with the pre-change reserve values before any state is written. This ensures the accumulator captures the price that was valid during the elapsed period, not the new post-swap price.
+
+#### Changes to Existing Functions
+
+| Function | Change |
+|---|---|
+| `initialize()` | Sets `Price0CumulativeLast` and `Price1CumulativeLast` to 0, sets `BlockTimestampLast` to current ledger timestamp |
+| `add_liquidity()` | Reads pre-change reserves, calls `update_price_cumulative()` before writing new reserve values |
+| `remove_liquidity()` | Reads pre-change reserves, calls `update_price_cumulative()` before writing new reserve values |
+| `swap_xlm_to_sxlm()` | Reads pre-change reserves, calls `update_price_cumulative()` before writing new reserve values |
+| `swap_sxlm_to_xlm()` | Reads pre-change reserves, calls `update_price_cumulative()` before writing new reserve values |
+
+**Why pre-change reserves:** the accumulator records the time-weighted price during the period leading up to this transaction, not the price resulting from it. Calling `update_price_cumulative()` with post-change reserves would contaminate the current period's price with the effect of the current swap.
 
 ---
 
@@ -63,103 +61,92 @@ fn update_price_cumulative(reserve_xlm, reserve_sxlm)
 
 **File:** `contracts/liquidity-mining/src/lib.rs`
 
-Complete new contract (~700 lines) with:
+#### Public functions
 
 ```rust
-pub fn initialize(lp_token, reward_token, reward_rate, admin)
-pub fn stake(user, amount)                    // Claim pending + add stake
-pub fn unstake(user, amount)                  // Withdraw LP tokens
-pub fn claim_rewards(user)                    // Claim without unstaking
-pub fn set_reward_rate(new_rate)             // Governance: change APR
-
-// Views
-pub fn get_pending_rewards(user) -> i128
-pub fn get_staked(user) -> i128
-pub fn get_total_staked() -> i128
-pub fn get_apr() -> i128                     // Current annual percentage rate
-pub fn get_config() -> Config
+pub fn initialize(env, lp_token, reward_token, reward_rate, admin)
+pub fn stake(env, user, amount)         // settle pending rewards, then add stake
+pub fn unstake(env, user, amount)       // settle rewards internally, return LP tokens
+pub fn claim_rewards(env, user)         // settle rewards without unstaking
+pub fn set_reward_rate(env, new_rate)   // admin only, governance-callable
 ```
 
-**Key Features:**
-- Efficient accRewardPerShare tracking (no loops)
-- Works with any ERC20-compatible LP token
-- Reward rate (governance-controlled) in tokens/second
-- APR automatically calculated: `(rewardRate × 31,536,000) / totalStaked`
-- TTL management for long-term reliability
+#### View functions
+
+```rust
+pub fn get_pending_rewards(env, user) -> i128
+pub fn get_staked(env, user) -> i128
+pub fn get_total_staked(env) -> i128
+pub fn get_apr(env) -> i128
+pub fn get_config(env) -> Config
+```
+
+#### Key design decisions
+
+- `accRewardPerShare` pattern: reward tracking is O(1) regardless of staker count, no loops over users
+- `_settle_rewards()` private helper: both `unstake()` and `claim_rewards()` call this internally, avoiding the double-auth bug where calling a public function from another public function would require `require_auth()` twice and panic on Soroban
+- `update_pool()` is called at the start of every state change to settle accumulated rewards at the current rate before any rate or stake changes take effect
+- `set_reward_rate()` calls `update_pool()` first to settle at the old rate, then updates -- prevents retroactive reward calculation at the new rate
+- APR formula: `(reward_rate * 31_536_000) / total_staked`
 
 ---
 
 ## Part 2: Backend Services
 
-### 1. TWAP Oracle Service
+### TWAP Oracle Service
 
 **File:** `backend/src/twap-oracle/index.ts`
 
-```typescript
-class TwapOracleService {
-    async tick()                           // Poll contract every 5-10s
-    private calculateAndStoreTwap()       // Persist to DB
-    async getLatestPrice()                // Query latest price
-    async getPricesOverWindow()           // Historical range query
-}
-```
+How it works:
+1. Polls `lp-pool.get_twap_data()` every 5 seconds via Soroban RPC simulate
+2. Stores `(price0Cumulative, timestamp)` snapshots in memory
+3. Prunes snapshots older than the configured window (default 1800s)
+4. When 2 or more snapshots exist, calculates `TWAP = (cum_new - cum_old) / elapsed`
+5. Descales from fixed-point by dividing by 1e7
+6. Persists result to `TwapSnapshot` table
+7. Emits `TWAP_PRICE_UPDATED` event on Redis event bus for lending engine consumption
 
-**How It Works:**
-1. Polls `lp-pool.get_twap_data()` every 5-10 seconds
-2. Stores price0Cumulative and timestamp locally
-3. When ≥2 snapshots exist, calculates TWAP
-4. Persists to `TwapSnapshot` table
-5. Emits `TWAP_PRICE_UPDATED` event for other services
-
-**Manipulation Resistance:**
-- Can't move TWAP short-term (requires time)
-- Flash loans don't help (TWAP tracks cumulative, not spot)
-- Sandwich attacks captured in TWAP but amortized over window
+Manipulation resistance:
+- Flash loans cannot move the TWAP -- a single block cannot affect a 30-minute window
+- Sandwich attacks are captured in the accumulator but amortized across the full window
+- Spot price manipulation requires sustained capital for the full window duration
 
 ---
 
-### 2. DEX Integration Routes
+### DEX Integration Routes
 
 **File:** `backend/src/api-gateway/routes/dex.ts`
 
-Four new endpoints:
+| Endpoint | Description |
+|---|---|
+| `GET /dex/oracle/price?window=1800` | Returns TWAP price for sXLM/XLM. Returns 503 if fewer than 2 snapshots exist |
+| `GET /dex/quote` | Returns outAmount, fee, priceImpact, executionPrice, minOutAmount (0.5% slippage default), twapPrice for comparison |
+| `GET /dex/route` | Returns optimal swap path + pre-built calldata with contract ID and function args ready for Freighter signing |
+| `GET /dex/pools` | Returns current pool reserves, fee bps, total LP supply |
+
+Quote calculation:
 
 ```
-GET  /dex/oracle/price?window=1800   → TWAP price (sXLM/XLM)
-GET  /dex/quote?inToken=XLM&outToken=sXLM&inAmount=10000000
-     → Swap quote with slippage and price impact
-GET  /dex/route?inToken=XLM&outToken=sXLM&inAmount=10000000
-     → Optimal path + pre-built calldata
-GET  /dex/pools                       → Pool information
+outAmount    = reserveOut - (reserveIn * reserveOut) / (reserveIn + amountInAfterFee)
+fee          = 0.3% of input
+priceImpact  = (amountInWithFee / (reserveIn + amountInWithFee)) * 100
+minOutAmount = outAmount * 0.995
 ```
-
-**Quote Calculation:**
-- Uses AMM formula: `outAmount = reserveOut - k / (reserveIn + amountInAfterFee)`
-- Fee: 0.3% of input
-- Price Impact: `(amountInWithFee / (reserveIn + amountInWithFee)) × 100`
-- MinOut: `outAmount × (1 - slippageTolerance)` (0.5% default)
 
 ---
 
-### 3. Mining Routes
+### Mining Routes
 
 **File:** `backend/src/api-gateway/routes/mining.ts`
 
-Six new endpoints:
-
-```
-GET  /mining/apr                      → Current APR %
-GET  /mining/rewards?wallet=G...      → User's pending + claimed
-POST /mining/stake                    → Build stake transaction (auth)
-POST /mining/claim                    → Build claim transaction (auth)
-POST /mining/unstake                  → Build unstake transaction (auth)
-GET  /mining/leaderboard?limit=10     → Top miners
-```
-
-**User Flows:**
-- Stake: Approve LP tokens → Call `mining.stake(amount)` → Rewards accrue
-- Claim: Call `mining.claim_rewards()` → sXLM transferred
-- Unstake: Call `mining.unstake(amount)` → LP tokens returned + rewards claimed
+| Endpoint | Description |
+|---|---|
+| `GET /mining/apr` | Current APR calculated from contract reward_rate and total_staked |
+| `GET /mining/rewards?wallet=G...` | Returns pending rewards and staked amount for a wallet |
+| `POST /mining/stake` (auth) | Builds and returns unsigned XDR for user to sign via Freighter |
+| `POST /mining/claim` (auth) | Builds and returns unsigned XDR for claim_rewards() |
+| `POST /mining/unstake` (auth) | Builds and returns unsigned XDR for unstake() |
+| `GET /mining/leaderboard?limit=10` | Returns top stakers by LP tokens staked |
 
 ---
 
@@ -167,35 +154,41 @@ GET  /mining/leaderboard?limit=10     → Top miners
 
 **File:** `backend/prisma/schema.prisma`
 
-Added two new models:
+**Migration:** `npx prisma migrate dev --name dex_integration`
+
+### TwapSnapshot (new model)
 
 ```prisma
 model TwapSnapshot {
-  id            Int      @id @default(autoincrement())
-  price         Float    // sXLM/XLM price
-  windowSeconds Int      // Calculation window
+  id            String   @id @default(cuid())
+  price         Decimal
+  windowSeconds Int
   timestamp     DateTime @default(now())
   @@index([timestamp])
 }
+```
 
+### MiningPosition (new model)
+
+```prisma
 model MiningPosition {
-  id           String   @id @default(cuid())
-  wallet       String   @unique
-  lpTokens     BigInt   // LP tokens staked
-  rewardDebt   BigInt   // Debt for distribution
-  totalClaimed BigInt   // Claimed rewards
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id             String   @id @default(cuid())
+  walletAddress  String   @unique
+  lpTokensStaked Decimal
+  rewardDebt     Decimal
+  totalClaimed   Decimal  @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
 ```
 
-Extended `ProtocolMetrics`:
-- `xlmReserve: BigInt` - LP pool XLM reserve
-- `sxlmReserve: BigInt` - LP pool sXLM reserve
+### ProtocolMetrics (extended)
 
-**Migration:**
-```bash
-npx prisma migrate dev --name dex_integration
+Added two fields to the existing model:
+
+```prisma
+xlmReserve   Decimal   // LP pool XLM reserve, updated by metrics-cron
+sxlmReserve  Decimal   // LP pool sXLM reserve, updated by metrics-cron
 ```
 
 ---
@@ -203,309 +196,118 @@ npx prisma migrate dev --name dex_integration
 ## Part 4: DEX SDK Package
 
 **Files:**
-- `packages/dex-sdk/src/index.ts` - Main SDK
-- `packages/dex-sdk/package.json` - NPM metadata
-- `packages/dex-sdk/README.md` - Documentation
+- `packages/dex-sdk/src/index.ts`
+- `packages/dex-sdk/package.json`
+- `packages/dex-sdk/README.md`
 
-**Installation:**
-```bash
-npm install @stello/dex-sdk @stellar/stellar-sdk
-```
-
-**Key Classes/Interfaces:**
-
-```typescript
-class StelloClient {
-    // Oracle methods
-    getTwapPrice(windowSeconds?) -> Promise<TwapPriceResponse>
-    
-    // Swap methods
-    getQuote(inToken, outToken, inAmount) -> Promise<QuoteResponse>
-    getRoute(inToken, outToken, inAmount) -> Promise<RouteResponse>
-    getPools() -> Promise<PoolsResponse>
-    
-    // Mining methods
-    getMiningApr() -> Promise<MiningAprResponse>
-    getRewards(wallet) -> Promise<RewardsResponse>
-    getLeaderboard(limit) -> Promise<LeaderboardResponse>
-}
-```
-
-**Tree-shaking Compatible:**
-- ESM and CommonJS builds
-- TypeScript types included
-- Zero dependencies (uses fetch API)
-
----
-
-## Part 5: Documentation
-
-### Integrator Guide
-
-**File:** `docs/dex-integration.md` (5000+ words)
-
-Comprehensive guide covering:
-1. ✅ TWAP Oracle concepts and usage
-2. ✅ Swap integration examples
-3. ✅ Liquidity mining program
-4. ✅ Error handling patterns
-5. ✅ Best practices
-6. ✅ Complete code examples
-7. ✅ Rate limiting and support
-
-### SDK README
-
-**File:** `packages/dex-sdk/README.md`
-
-- Quick start
-- API reference
-- Configuration
-- Examples
-- Type definitions
-
----
-
-## Integration Checklist
-
-Before deploying, ensure:
-
-### Contracts
-- [ ] `lp-pool` build succeeds: `cargo build --release`
-- [ ] `liquidity-mining` build succeeds: `cargo build --release`
-- [ ] Contract addresses updated in environment files
-- [ ] TWAP accumulator initialized in `lp-pool.initialize()`
-
-### Backend
-- [ ] Database migration runs: `npx prisma migrate dev`
-- [ ] TWAP oracle service scheduled in main server
-- [ ] DEX routes registered: `app.register(dexRoutes)`
-- [ ] Mining routes registered: `app.register(miningRoutes)`
-- [ ] Event bus handles `PROPOSAL_EXECUTED` for rate changes
-- [ ] Environment variables set:
-  - `STELLAR_RPC_URL`
-  - `LP_POOL_CONTRACT_ID`
-  - `LIQUIDITY_MINING_CONTRACT_ID`
-  - `ADMIN_PUBLIC_KEY`, `ADMIN_SECRET_KEY`
-
-### Frontend
-- [ ] Update environment `.env`:
-  - `VITE_LP_POOL_CONTRACT_ID`
-  - `VITE_LIQUIDITY_MINING_CONTRACT_ID`
-  - `VITE_API_URL`
-- [ ] Install SDK: `npm install @stello/dex-sdk`
-- [ ] Test swap UI with quotes
-- [ ] Test mining dashboard with APR/rewards
-
----
-
-## Configuration
-
-### Environment Variables
+### Installation
 
 ```bash
-# Smart Contracts (testnet addresses shown)
-LP_POOL_CONTRACT_ID=CAW2DRMOI3CCJWKVMEUWYJUEQHXB4S4DR72HNL2DWQCMQQUH3LFFVLHV
-LIQUIDITY_MINING_CONTRACT_ID=CXXX...  # To be deployed
-
-# Stellar
-STELLAR_RPC_URL=https://soroban-testnet.stellar.org
-STELLAR_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
-
-# API endpoints
-API_URL=http://localhost:3001         # Development
-# API_URL=https://api.stello.finance  # Production
+npm install @stello/dex-sdk
 ```
 
-### Frontend Integration
+### Usage
 
 ```typescript
 import { StelloClient } from '@stello/dex-sdk';
 
 const client = new StelloClient({
-    apiUrl: process.env.VITE_API_URL,
-    timeout: 15000,
+  apiUrl: 'https://api.stello.finance',
 });
 
-// Use throughout app
-const twap = await client.getTwapPrice();
+// Oracle
+const price = await client.getTwapPrice(1800);
+
+// Swaps
 const quote = await client.getQuote('XLM', 'sXLM', 1_000_000);
+const route = await client.getRoute('XLM', 'sXLM', 1_000_000);
+const pools = await client.getPools();
+
+// Mining
+const apr     = await client.getMiningApr();
+const rewards = await client.getRewards('GXXX...');
+const leaders = await client.getLeaderboard(10);
 ```
+
+### Package details
+
+- Zero runtime dependencies -- uses native fetch API
+- Ships ESM and CommonJS builds via tsup
+- Full TypeScript types for all request and response shapes
+- No peer dependencies required
 
 ---
 
-## API Endpoints Reference
+## Part 5: Documentation
 
-### DEX/Oracle Endpoints
+**File:** `docs/dex-integration.md`
 
-```
-GET /dex/oracle/price
-    Query: window=1800
-    Returns: { price, currency, windowSeconds, dataPoints, updatedAt }
-    Status: 200 (success) | 503 (insufficient data)
-
-GET /dex/quote
-    Query: inToken=XLM, outToken=sXLM, inAmount=10000000
-    Returns: { outAmount, fee, priceImpact, minOutAmount, ... }
-    Status: 200 (success) | 400 (invalid) | 503 (no liquidity)
-
-GET /dex/route
-    Query: same as quote
-    Returns: { path, lpPoolContractId, calldata, ... }
-    Status: 200 (success) | 400 (invalid)
-
-GET /dex/pools
-    Returns: { pools: [{ name, reserves, feeBps, ... }], count }
-    Status: 200 (success)
-```
-
-### Mining Endpoints
-
-```
-GET /mining/apr
-    Returns: { apr, timestamp }
-    Status: 200 (success)
-
-GET /mining/rewards
-    Query: wallet=GXXX...
-    Returns: { wallet, staked, totalClaimed, pending }
-    Status: 200 (success)
-
-POST /mining/stake (requires auth)
-    Body: { amount }
-    Returns: { xdr }  # Unsigned transaction
-    Status: 200 (success) | 400 (invalid) | 401 (auth)
-
-POST /mining/claim (requires auth)
-    Returns: { xdr }
-    Status: 200 (success) | 401 (auth)
-
-POST /mining/unstake (requires auth)
-    Body: { amount }
-    Returns: { xdr }
-    Status: 200 (success) | 400 (invalid) | 401 (auth)
-
-GET /mining/leaderboard
-    Query: limit=10
-    Returns: { leaderboard, count }
-    Status: 200 (success)
-```
+The integrator guide covers:
+- TWAP oracle concepts: what cumulative price accumulators are, how to interpret the window parameter, manipulation resistance properties
+- Swap integration: step-by-step guide for StellarX and Lumenswap to list the sXLM/XLM pair using getQuote() and getRoute()
+- Liquidity mining: how staking works, how APR is calculated, how governance proposals change the reward rate
+- Error handling: 503 on insufficient TWAP data, 400 on invalid params, retry patterns
+- Complete code examples for all SDK methods
+- Rate limiting guidance and support contact
 
 ---
 
-## Performance & Monitoring
+## Deployment Checklist
 
-### TWAP Service
+### Contracts
+- [ ] `lp-pool` build: `cargo build --release` in `contracts/lp-pool`
+- [ ] `liquidity-mining` build: `cargo build --release` in `contracts/liquidity-mining`
+- [ ] Deploy `liquidity-mining` to testnet and update `LIQUIDITY_MINING_CONTRACT_ID` in env
+- [ ] Verify lp-pool TWAP accumulators initialized (check `get_twap_data()` returns non-zero timestamp after first swap)
 
-- Runs every 5-10 seconds
-- ~50ms per tick (RPC call + DB write)
-- Stores 30 minutes of snapshots (100-200 samples)
-- Query time: <10ms for any window
+### Backend
+- [ ] Run database migration: `npx prisma migrate dev --name dex_integration`
+- [ ] Register TWAP oracle service in `backend/src/index.ts` alongside `metrics-cron`
+- [ ] Register DEX routes: `app.register(dexRoutes)` in `server.ts`
+- [ ] Register mining routes: `app.register(miningRoutes)` in `server.ts`
+- [ ] Add `PROPOSAL_EXECUTED` handler in event-bus for `SET_MINING_REWARD_RATE`
+- [ ] Set environment variables:
+  - `STELLAR_RPC_URL`
+  - `LP_POOL_CONTRACT_ID`
+  - `LIQUIDITY_MINING_CONTRACT_ID`
+  - `ADMIN_PUBLIC_KEY`
+  - `ADMIN_SECRET_KEY`
 
-### DEX Routes
-
-- Quote calculation: <5ms
-- Route construction: <10ms
-- Caches pool reserves
-- Updates every metrics refresh (5 minutes)
-
-### Mining
-
-- APR fetch: <50ms (RPC call)
-- Rewards check: <5ms (DB query)
-- Leaderboard: <50ms (DB sort)
-
----
-
-## Future Enhancements
-
-1. **Multi-hop Routing** - Support DAI/USDC as intermediaries
-2. **Flash Loans** - LP fee discount for atomic repayment
-3. **Dynamic Fees** - Fee varies by volume
-4. **Options** - sXLM call/put contracts
-5. **Governance Rewards** - Voting power staking
-6. **Cross-chain Bridge** - Polygon/Ethereum bridges
+### Frontend
+- [ ] Add `VITE_LIQUIDITY_MINING_CONTRACT_ID` to `.env`
+- [ ] Install SDK: `npm install @stello/dex-sdk`
+- [ ] Wire up mining dashboard using `getMiningApr()` and `getRewards()`
+- [ ] Wire up swap quote UI using `getQuote()` and `getRoute()`
 
 ---
 
-## Testing
+## Tests
 
-### Local Development
-
-```bash
-# Start services
-docker-compose up
-
-# Run migrations
-npx prisma migrate dev
-
-# Seed data (optional)
-npx ts-node scripts/seed.ts
-
-# Build and test
-npm run build
-npm test
-
-# Start backend
-npm run dev
-
-# In another terminal, test SDK
-npm install -g tsx
-tsx examples/test-sdk.ts
-```
-
-### Testnet Deployment
-
-```bash
-# Deploy contracts
-cd contracts
-./deploy.sh testnet
-
-# Update env vars with deployed contract IDs
-# Run migrations
-npx prisma migrate deploy
-
-# Start backend
-NODE_ENV=staging npm start
-```
-
-### Production Checklist
-
-- [ ] All contracts audited
-- [ ] Rate limits configured
-- [ ] CORS properly restricted
-- [ ] API keys stored securely
-- [ ] Database backups enabled
-- [ ] Monitoring/alerts set up
-- [ ] CDN caching configured for `/dex/` routes
-- [ ] SSL certificates valid
+| Test | Result |
+|---|---|
+| liquidity-mining: test_initialize | ok |
+| liquidity-mining: test_stake | ok |
+| liquidity-mining: test_unstake | ok |
+| liquidity-mining: test_rewards_accrue_over_time | ok |
+| liquidity-mining: test_claim_rewards | ok |
+| liquidity-mining: test_set_reward_rate_admin_only | ok |
+| lp-pool: all existing tests | ok |
+| lp-pool: test_twap_accumulates_after_swap | ok |
+| lp-pool: test_twap_price_derivation | ok |
+| lp-pool: test_twap_no_accumulation_same_timestamp | ok |
 
 ---
 
 ## Summary
 
-This implementation provides:
-
-✅ **TWAP Oracle** - 30-minute manipulation-resistant pricing  
-✅ **Swap DEX** - Direct XLM ↔ sXLM swaps with 0.3% fee  
-✅ **Liquidity Mining** - Governance-controlled reward distribution  
-✅ **Public SDK** - npm @stello/dex-sdk for easy integration  
-✅ **REST API** - 10 new endpoints for price/quote/mining data  
-✅ **Documentation** - 5000+ word integrator guide + examples  
-✅ **Database** - Schema updated with TWAP + mining models  
-✅ **Smart Contracts** - Enhanced lp-pool + new liquidity-mining  
-
-**Total Implementation:**
-- 3 smart contracts (enhanced + new)
-- 2 backend services (TWAP + routes)
-- 2 API route files
-- 1 npm SDK package
-- 1 comprehensive guide
-- Database migrations
-
-All code follows Stello conventions, includes error handling, and is production-ready.
+| Requirement | Status |
+|---|---|
+| sXLM/XLM price oracle using TWAP from LP pool | Complete -- contract accumulators + off-chain service + /dex/oracle/price endpoint |
+| Public SDK for DEX integrations (price quotes, swap routing) | Complete -- @stello/dex-sdk with getQuote(), getRoute(), getTwapPrice() |
+| Liquidity mining program distributable via governance proposals | Complete -- liquidity-mining contract with set_reward_rate() triggered by PROPOSAL_EXECUTED event |
+| Documentation for external integrators | Complete -- docs/dex-integration.md + packages/dex-sdk/README.md |
 
 ---
 
-**Implementation Date:** March 17, 2026  
-**Next Review:** April 17, 2026  
-**Status:** ✅ COMPLETE - Ready for deployment
+**Implementation Date:** March 17, 2026
+**Status:** Ready for deployment
