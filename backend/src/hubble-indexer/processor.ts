@@ -100,15 +100,25 @@ export function parseEvent(event: RawSorobanEvent): ParsedEvent | null {
     }
 
     if (topicName === "liq") {
-      // liq(liquidator, borrower, debtRepaid, collateralSeized)
+      // liq(liquidator, borrower, debtRepaid, seizedAssets)
+      // seizedAssets is a Vec<(Address, i128)> emitted by the multi-collateral contract.
+      // For backward compat with a legacy single-value emission we wrap in an array.
       const vals = Array.isArray(decoded) ? decoded : [decoded];
+      const rawSeized = vals[3];
+      const seizedAssets: Array<{ asset: string; amount: bigint }> =
+        Array.isArray(rawSeized)
+          ? (rawSeized as Array<[unknown, unknown]>).map(([a, amt]) => ({
+              asset: toString(a),
+              amount: toBigInt(amt),
+            }))
+          : [];
       return {
         ...base,
         kind: "liquidation",
         liquidator: toString(vals[0]),
         borrower: toString(vals[1]),
         debtRepaid: toBigInt(vals[2]),
-        collateralSeized: toBigInt(vals[3]),
+        seizedAssets,
       };
     }
 
@@ -249,21 +259,40 @@ export async function persistEvents(
   }
 
   if (liquidationEvents.length > 0) {
+    // createMany does not support nested writes, so we create each liquidation
+    // event individually with its seizedAssets nested inside a transaction.
     writes.push(
-      prisma.liquidationEvent.createMany({
-        data: liquidationEvents.map((e) => ({
-          txHash: e.txHash,
-          eventIndex: e.eventIndex,
-          contractId: e.contractId,
-          ledger: e.ledger,
-          ledgerClosedAt: e.ledgerClosedAt,
-          liquidator: e.liquidator,
-          borrower: e.borrower,
-          debtRepaid: e.debtRepaid,
-          collateralSeized: e.collateralSeized,
-        })),
-        skipDuplicates: true,
-      })
+      prisma.$transaction(
+        liquidationEvents.map((e) =>
+          prisma.liquidationEvent.upsert({
+            where: {
+              txHash_eventIndex: {
+                txHash: e.txHash ?? "",
+                eventIndex: e.eventIndex,
+              },
+            },
+            create: {
+              txHash: e.txHash,
+              eventIndex: e.eventIndex,
+              contractId: e.contractId,
+              ledger: e.ledger,
+              ledgerClosedAt: e.ledgerClosedAt,
+              liquidator: e.liquidator,
+              borrower: e.borrower,
+              debtRepaid: e.debtRepaid,
+              seizedAssets: {
+                createMany: {
+                  data: e.seizedAssets.map((s) => ({
+                    asset: s.asset,
+                    amount: s.amount,
+                  })),
+                },
+              },
+            },
+            update: {},
+          })
+        )
+      )
     );
   }
 

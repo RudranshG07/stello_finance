@@ -74,15 +74,29 @@ model ProtocolMetrics {
 }
 
 model CollateralPosition {
-  id            Int      @id @default(autoincrement())
-  wallet        String
-  sxlmDeposited BigInt
-  xlmBorrowed   BigInt
-  healthFactor  Float
-  updatedAt     DateTime @default(now())
+  id                 Int      @id @default(autoincrement())
+  wallet             String   @unique
+  collateralValueXlm BigInt   @default(0)
+  xlmBorrowed        BigInt
+  healthFactor       Float
+  maxBorrow          BigInt   @default(0)
+  updatedAt          DateTime @default(now())
 
   @@index([wallet])
   @@map("collateral_positions")
+}
+
+/// Per-asset collateral balance for a wallet (upserted on every deposit/withdraw).
+model CollateralDeposit {
+  id        Int      @id @default(autoincrement())
+  wallet    String
+  asset     String
+  amount    BigInt   @default(0)
+  updatedAt DateTime @default(now())
+
+  @@unique([wallet, asset])
+  @@index([wallet])
+  @@map("collateral_deposits")
 }
 
 model LPPosition {
@@ -112,23 +126,37 @@ model GovernanceProposal {
 }
 
 model LiquidationEvent {
-  id               Int      @id @default(autoincrement())
-  txHash           String?
-  eventIndex       Int?
-  contractId       String?
-  liquidator       String
-  borrower         String
-  debtRepaid       BigInt
-  collateralSeized BigInt
-  ledger           Int
-  ledgerClosedAt   DateTime?
-  createdAt        DateTime @default(now())
+  id             Int      @id @default(autoincrement())
+  txHash         String?
+  eventIndex     Int?
+  contractId     String?
+  liquidator     String
+  borrower       String
+  debtRepaid     BigInt
+  ledger         Int
+  ledgerClosedAt DateTime?
+  createdAt      DateTime @default(now())
+
+  seizedAssets LiquidationSeizedAsset[]
 
   @@unique([txHash, eventIndex])
   @@index([borrower])
   @@index([liquidator])
   @@index([contractId, ledger])
   @@map("liquidation_events")
+}
+
+/// Individual collateral asset seized in a liquidation (one row per asset per event).
+model LiquidationSeizedAsset {
+  id                 Int              @id @default(autoincrement())
+  liquidationEventId Int
+  asset              String
+  amount             BigInt
+
+  liquidationEvent LiquidationEvent @relation(fields: [liquidationEventId], references: [id], onDelete: Cascade)
+
+  @@index([liquidationEventId])
+  @@map("liquidation_seized_assets")
 }
 
 // ─── Event-level tables ────────────────────────────────────────────────────
@@ -194,6 +222,44 @@ model RepayEvent {
   @@index([ledger])
   @@index([contractId, ledger])
   @@map("repay_events")
+}
+
+model DepositCollateralEvent {
+  id             Int      @id @default(autoincrement())
+  txHash         String
+  eventIndex     Int
+  contractId     String
+  ledger         Int
+  ledgerClosedAt DateTime
+  wallet         String
+  asset          String
+  amount         BigInt
+  createdAt      DateTime @default(now())
+
+  @@unique([txHash, eventIndex])
+  @@index([wallet])
+  @@index([ledger])
+  @@index([contractId, ledger])
+  @@map("deposit_collateral_events")
+}
+
+model WithdrawCollateralEvent {
+  id             Int      @id @default(autoincrement())
+  txHash         String
+  eventIndex     Int
+  contractId     String
+  ledger         Int
+  ledgerClosedAt DateTime
+  wallet         String
+  asset          String
+  amount         BigInt
+  createdAt      DateTime @default(now())
+
+  @@unique([txHash, eventIndex])
+  @@index([wallet])
+  @@index([ledger])
+  @@index([contractId, ledger])
+  @@map("withdraw_collateral_events")
 }
 
 model FlashLoanEvent {

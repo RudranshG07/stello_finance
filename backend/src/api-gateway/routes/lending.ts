@@ -397,29 +397,36 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         amount: Number(entry.amount ?? 0) / 1e7,
       }));
 
-      // Sync aggregate values to DB (sxlmDeposited stores total XLM-value of collateral).
+      // Sync aggregate values to DB.
       if (collateralValueXlm > 0n || borrowed > 0n) {
-        const existing = await prisma.collateralPosition.findFirst({ where: { wallet } });
-        if (existing) {
-          await prisma.collateralPosition.update({
-            where: { id: existing.id },
-            data: {
-              sxlmDeposited: collateralValueXlm,
-              xlmBorrowed: borrowed,
-              healthFactor,
-              updatedAt: new Date(),
-            },
-          });
-        } else {
-          await prisma.collateralPosition.create({
-            data: {
-              wallet,
-              sxlmDeposited: collateralValueXlm,
-              xlmBorrowed: borrowed,
-              healthFactor,
-            },
-          });
-        }
+        await prisma.collateralPosition.upsert({
+          where: { wallet },
+          create: {
+            wallet,
+            collateralValueXlm,
+            xlmBorrowed: borrowed,
+            healthFactor,
+            maxBorrow,
+          },
+          update: {
+            collateralValueXlm,
+            xlmBorrowed: borrowed,
+            healthFactor,
+            maxBorrow,
+            updatedAt: new Date(),
+          },
+        });
+
+        // Sync per-asset collateral balances to collateral_deposits.
+        await Promise.all(
+          collaterals.map((c) =>
+            prisma.collateralDeposit.upsert({
+              where: { wallet_asset: { wallet, asset: c.asset } },
+              create: { wallet, asset: c.asset, amount: BigInt(c.amountRaw) },
+              update: { amount: BigInt(c.amountRaw), updatedAt: new Date() },
+            })
+          )
+        );
       }
 
       return {
@@ -442,21 +449,26 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
     } catch (err: unknown) {
       // Fallback to DB if the contract query fails.
       const { wallet } = request.params as { wallet: string };
-      const dbPosition = await prisma.collateralPosition.findFirst({
-        where: { wallet },
-        orderBy: { updatedAt: "desc" },
-      });
+      const [dbPosition, dbDeposits] = await Promise.all([
+        prisma.collateralPosition.findUnique({ where: { wallet } }),
+        prisma.collateralDeposit.findMany({ where: { wallet } }),
+      ]);
+      const collateralsFromDB = dbDeposits.map((d) => ({
+        asset: d.asset,
+        amountRaw: d.amount.toString(),
+        amount: Number(d.amount) / 1e7,
+      }));
       return dbPosition
         ? {
             wallet,
-            collaterals: [],
-            collateralValueXlm: Number(dbPosition.sxlmDeposited) / 1e7,
-            collateralValueXlmRaw: dbPosition.sxlmDeposited.toString(),
+            collaterals: collateralsFromDB,
+            collateralValueXlm: Number(dbPosition.collateralValueXlm) / 1e7,
+            collateralValueXlmRaw: dbPosition.collateralValueXlm.toString(),
             xlmBorrowed: Number(dbPosition.xlmBorrowed) / 1e7,
             xlmBorrowedRaw: dbPosition.xlmBorrowed.toString(),
             healthFactor: dbPosition.healthFactor,
-            maxBorrow: 0,
-            maxBorrowRaw: "0",
+            maxBorrow: Number(dbPosition.maxBorrow) / 1e7,
+            maxBorrowRaw: dbPosition.maxBorrow.toString(),
             borrowRateBps: 500,
           }
         : {
