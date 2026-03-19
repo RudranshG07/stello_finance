@@ -170,8 +170,28 @@
       ]
     ],
     [],
-    [],
-    [],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+              "function_name": "set_collateral_factor",
+              "args": [
+                {
+                  "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                },
+                {
+                  "u32": 7500
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
     []
   ],
   "ledger": {
@@ -328,6 +348,39 @@
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 1033654523790656264
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 6277191135259896685
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 6277191135259896685
                   }
                 },
                 "durability": "temporary",
@@ -586,7 +639,7 @@
                         "val": {
                           "i128": {
                             "hi": 0,
-                            "lo": 7000
+                            "lo": 7500
                           }
                         }
                       },
@@ -2040,57 +2093,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000009"
               },
               {
-                "symbol": "total_borrowed"
-              }
-            ],
-            "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000009",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "total_borrowed"
-              }
-            ],
-            "data": {
-              "i128": {
-                "hi": 0,
-                "lo": 0
-              }
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000009"
-              },
-              {
-                "symbol": "total_collateral_for_asset"
+                "symbol": "get_collateral_factor"
               }
             ],
             "data": {
@@ -2113,13 +2116,13 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "total_collateral_for_asset"
+                "symbol": "get_collateral_factor"
               }
             ],
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 0
+                "lo": 7000
               }
             }
           }
@@ -2142,10 +2145,46 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000009"
               },
               {
-                "symbol": "get_borrow_rate"
+                "symbol": "set_collateral_factor"
               }
             ],
-            "data": "void"
+            "data": {
+              "vec": [
+                {
+                  "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                },
+                {
+                  "u32": 7500
+                }
+              ]
+            }
+          }
+        }
+      },
+      "failed_call": false
+    },
+    {
+      "event": {
+        "ext": "v0",
+        "contract_id": "0000000000000000000000000000000000000000000000000000000000000009",
+        "type_": "contract",
+        "body": {
+          "v0": {
+            "topics": [
+              {
+                "symbol": "cf_upd"
+              }
+            ],
+            "data": {
+              "vec": [
+                {
+                  "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                },
+                {
+                  "u32": 7500
+                }
+              ]
+            }
           }
         }
       },
@@ -2163,15 +2202,10 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_borrow_rate"
+                "symbol": "set_collateral_factor"
               }
             ],
-            "data": {
-              "i128": {
-                "hi": 0,
-                "lo": 500
-              }
-            }
+            "data": "void"
           }
         }
       },
@@ -2192,10 +2226,12 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000009"
               },
               {
-                "symbol": "get_liquidation_bonus"
+                "symbol": "get_collateral_factor"
               }
             ],
-            "data": "void"
+            "data": {
+              "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+            }
           }
         }
       },
@@ -2213,13 +2249,13 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_liquidation_bonus"
+                "symbol": "get_collateral_factor"
               }
             ],
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 500
+                "lo": 7500
               }
             }
           }

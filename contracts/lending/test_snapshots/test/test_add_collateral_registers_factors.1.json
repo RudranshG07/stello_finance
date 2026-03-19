@@ -171,7 +171,6 @@
     ],
     [],
     [],
-    [],
     []
   ],
   "ledger": {
@@ -2040,57 +2039,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000009"
               },
               {
-                "symbol": "total_borrowed"
-              }
-            ],
-            "data": "void"
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": "0000000000000000000000000000000000000000000000000000000000000009",
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_return"
-              },
-              {
-                "symbol": "total_borrowed"
-              }
-            ],
-            "data": {
-              "i128": {
-                "hi": 0,
-                "lo": 0
-              }
-            }
-          }
-        }
-      },
-      "failed_call": false
-    },
-    {
-      "event": {
-        "ext": "v0",
-        "contract_id": null,
-        "type_": "diagnostic",
-        "body": {
-          "v0": {
-            "topics": [
-              {
-                "symbol": "fn_call"
-              },
-              {
-                "bytes": "0000000000000000000000000000000000000000000000000000000000000009"
-              },
-              {
-                "symbol": "total_collateral_for_asset"
+                "symbol": "get_collateral_factor"
               }
             ],
             "data": {
@@ -2113,13 +2062,13 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "total_collateral_for_asset"
+                "symbol": "get_collateral_factor"
               }
             ],
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 0
+                "lo": 7000
               }
             }
           }
@@ -2142,10 +2091,12 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000009"
               },
               {
-                "symbol": "get_borrow_rate"
+                "symbol": "get_liquidation_threshold"
               }
             ],
-            "data": "void"
+            "data": {
+              "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+            }
           }
         }
       },
@@ -2163,13 +2114,13 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_borrow_rate"
+                "symbol": "get_liquidation_threshold"
               }
             ],
             "data": {
               "i128": {
                 "hi": 0,
-                "lo": 500
+                "lo": 8000
               }
             }
           }
@@ -2192,7 +2143,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000009"
               },
               {
-                "symbol": "get_liquidation_bonus"
+                "symbol": "get_supported_collaterals"
               }
             ],
             "data": "void"
@@ -2213,14 +2164,15 @@
                 "symbol": "fn_return"
               },
               {
-                "symbol": "get_liquidation_bonus"
+                "symbol": "get_supported_collaterals"
               }
             ],
             "data": {
-              "i128": {
-                "hi": 0,
-                "lo": 500
-              }
+              "vec": [
+                {
+                  "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                }
+              ]
             }
           }
         }
