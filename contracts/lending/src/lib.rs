@@ -1342,4 +1342,508 @@ mod test {
 
         client.deposit_collateral(&user, &random_token, &1_000_0000000);
     }
+
+    // -------------------------------------------------------------------------
+    // Multi-collateral health factor tests
+    // -------------------------------------------------------------------------
+
+    /// Health factor is computed using per-asset liquidation thresholds and
+    /// oracle prices across all supported collateral assets.
+    #[test]
+    fn test_multi_collateral_health_factor_cross_asset() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        // USDC at 1.0 XLM, sXLM at 0.98 XLM.
+        pf.set_price(&usdc_id, &10_000_000);
+        pf.set_price(&sxlm_id, &9_800_000);
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        client.add_collateral(&usdc_id, &8000, &8500); // CF=80%, LT=85%
+        client.add_collateral(&sxlm_id, &7000, &8000); // CF=70%, LT=80%
+
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+
+        // Deposit 1 000 USDC + 1 000 sXLM.
+        client.deposit_collateral(&user, &usdc_id, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+
+        // Borrow 1 000 XLM.
+        client.borrow(&user, &10_000_000_000);
+
+        // HF_numerator = USDC:  10e9 * 10e6/1e7 * 8500 = 10e9 * 8500 = 85_000_000_000_000
+        //             + sXLM:  10e9 * 9.8e6/1e7 * 8000 = 9.8e9 * 8000 = 78_400_000_000_000
+        //           = 163_400_000_000_000
+        // HF = 163_400_000_000_000 * 1e7 / (10_000 * 10e9) = 163_400_000_000_000 / 10_000_000 = 16_340_000
+        let hf = client.health_factor(&user);
+        assert_eq!(hf, 16_340_000); // 1.634 × 1e7
+    }
+
+    /// Price drop on one collateral asset reduces the cross-asset health factor
+    /// below 1.0, making the position liquidatable.
+    ///
+    /// Setup:
+    ///   USDC: price=1.0, CF=80%, LT=85%  — 1 000 units deposited
+    ///   sXLM: price=0.98, CF=70%, LT=80% — 1 000 units deposited
+    ///   Borrow 10 200 XLM (within max-borrow of 14 860).
+    ///
+    ///   After sXLM crashes to 0.2 XLM:
+    ///     numerator = 10e9*10e6/1e7*8500 + 10e9*2e6/1e7*8000 = 85e12 + 16e12 = 101e12
+    ///     HF = 101e12 * 1e7 / (10000 * 10.2e9) = 9_901_960 < 1e7 → liquidatable
+    ///
+    ///   Total collateral value at new prices = 10e9 + 2e9 = 12e9 ≥ debt+bonus (10.71e9) ✓
+    #[test]
+    fn test_multi_collateral_price_drop_triggers_liquidation() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let liq = Address::generate(&env);
+
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        pf.set_price(&usdc_id, &10_000_000); // 1.0 XLM
+        pf.set_price(&sxlm_id, &9_800_000);  // 0.98 XLM
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        client.add_collateral(&usdc_id, &8000, &8500);
+        client.add_collateral(&sxlm_id, &7000, &8000);
+
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&liq, &500_000_0000000);
+
+        // Deposit 1 000 USDC + 1 000 sXLM; borrow 10 200 XLM (healthy at initial prices).
+        client.deposit_collateral(&user, &usdc_id, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+        client.borrow(&user, &10_200_000_000);
+
+        // Verify position is initially healthy.
+        let hf_before = client.health_factor(&user);
+        assert!(hf_before >= RATE_PRECISION, "expected healthy before price drop");
+
+        // sXLM crashes to 0.2 XLM.
+        pf.set_price(&sxlm_id, &2_000_000);
+
+        let hf_after = client.health_factor(&user);
+        assert!(
+            hf_after < RATE_PRECISION,
+            "expected unhealthy after price drop; got {}",
+            hf_after,
+        );
+
+        // Liquidation should now succeed.
+        // debt_with_bonus = 10_200_000_000 × 1.05 = 10_710_000_000
+        // USDC covers first 10_000_000_000 XLM; remaining 710_000_000 XLM covered by sXLM
+        // at 0.2 XLM/unit → 3_550_000_000 sXLM tokens seized.
+        let seize_assets = soroban_sdk::vec![&env, usdc_id.clone(), sxlm_id.clone()];
+        client.liquidate(&liq, &user, &seize_assets);
+
+        let (_, bor_after) = client.get_position(&user);
+        assert_eq!(bor_after, 0);
+        // All USDC seized; sXLM partially: 10e9 - 3_550_000_000 = 6_450_000_000 remains.
+        assert_eq!(client.total_collateral_for_asset(&usdc_id), 0);
+        assert_eq!(client.total_collateral_for_asset(&sxlm_id), 6_450_000_000);
+    }
+
+    // -------------------------------------------------------------------------
+    // Multi-collateral liquidation – seizure spanning two assets
+    // -------------------------------------------------------------------------
+
+    /// When one asset's collateral is not enough to cover the full debt-with-bonus,
+    /// the liquidator should continue seizing from the next asset in `seize_assets`
+    /// until the entire debt value (plus bonus) is recovered.
+    #[test]
+    fn test_multi_collateral_liquidation_two_asset_seizure() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let liq = Address::generate(&env);
+
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        pf.set_price(&usdc_id, &RATE_PRECISION); // 1:1
+        pf.set_price(&sxlm_id, &RATE_PRECISION); // 1:1
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        // Both assets: CF=70%, LT=50% → position becomes liquidatable at borrow ≥ 50% of collateral value.
+        client.add_collateral(&usdc_id, &7000, &5000);
+        client.add_collateral(&sxlm_id, &7000, &5000);
+
+        // User has 500 USDC + 500 sXLM = 1 000 XLM value; borrows 700.
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &5_000_000_000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &5_000_000_000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&liq, &100_000_0000000);
+
+        client.deposit_collateral(&user, &usdc_id, &5_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &5_000_000_000);
+        client.borrow(&user, &7_000_000_000);
+
+        // HF = (500 * 5000 + 500 * 5000) * 1e7 / (10000 * 7000)
+        //    ≈ 7_142_857 < 1e7 → liquidatable
+        let hf = client.health_factor(&user);
+        assert!(hf < RATE_PRECISION);
+
+        // Liquidate, seizing USDC first then sXLM.
+        let seize_assets = soroban_sdk::vec![&env, usdc_id.clone(), sxlm_id.clone()];
+        client.liquidate(&liq, &user, &seize_assets);
+
+        let (_, bor) = client.get_position(&user);
+        assert_eq!(bor, 0);
+
+        // debt_with_bonus = 7_000_000_000 × 1.05 = 7_350_000_000
+        // USDC balance = 5_000_000_000; tokens_to_cover (first pass) = 7_350_000_000 > 5_000_000_000
+        //   → seize all 5_000_000_000 USDC; xlm_seized = 5_000_000_000; debt_remaining = 2_350_000_000
+        // sXLM: tokens_to_cover = 2_350_000_000 ≤ 5_000_000_000
+        //   → seize exactly 2_350_000_000 sXLM; debt_remaining = 0
+
+        assert_eq!(client.total_collateral_for_asset(&usdc_id), 0);
+        assert_eq!(
+            client.total_collateral_for_asset(&sxlm_id),
+            2_650_000_000,  // 5_000_000_000 - 2_350_000_000
+        );
+
+        // Liquidator received all USDC + 2_350_000_000 sXLM as collateral.
+        let usdc_client = soroban_sdk::token::Client::new(&env, &usdc_id);
+        let sxlm_client = soroban_sdk::token::Client::new(&env, &sxlm_id);
+        assert_eq!(usdc_client.balance(&liq), 5_000_000_000);
+        assert_eq!(sxlm_client.balance(&liq), 2_350_000_000);
+    }
+
+    // -------------------------------------------------------------------------
+    // Withdraw blocked by cross-asset debt
+    // -------------------------------------------------------------------------
+
+    /// Withdrawing one collateral asset should still pass the health check that
+    /// considers ALL supported assets.  If the remaining combined collateral would
+    /// leave the position unhealthy, the withdrawal must revert.
+    #[test]
+    #[should_panic(expected = "withdrawal would make position unhealthy")]
+    fn test_multi_collateral_withdraw_blocked_by_cross_asset_debt() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        pf.set_price(&usdc_id, &RATE_PRECISION);
+        pf.set_price(&sxlm_id, &RATE_PRECISION);
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        client.add_collateral(&usdc_id, &8000, &8500);
+        client.add_collateral(&sxlm_id, &7000, &8000);
+
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+
+        // Deposit 1 000 USDC + 1 000 sXLM; borrow 1 400 (close to max = 1 500).
+        client.deposit_collateral(&user, &usdc_id, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+        client.borrow(&user, &14_000_000_000);
+
+        // Withdrawing 500 sXLM would leave the combined HF below 1:
+        // HF = (1000 USDC * 8500 + 500 sXLM * 8000) * 1e7 / (10000 * 14e9)
+        //    = (85e12 + 40e12) * 1e7 / 140e12 ≈ 8_928_571 < 1e7 → should panic.
+        client.withdraw_collateral(&user, &sxlm_id, &5_000_000_000);
+    }
+
+    // -------------------------------------------------------------------------
+    // Liquidation guard: healthy position must not be liquidatable
+    // -------------------------------------------------------------------------
+
+    #[test]
+    #[should_panic(expected = "position is healthy, cannot liquidate")]
+    fn test_liquidate_healthy_multi_collateral_position_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let liq = Address::generate(&env);
+
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        pf.set_price(&usdc_id, &RATE_PRECISION);
+        pf.set_price(&sxlm_id, &RATE_PRECISION);
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        client.add_collateral(&usdc_id, &8000, &8500);
+        client.add_collateral(&sxlm_id, &7000, &8000);
+
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&liq, &500_000_0000000);
+
+        client.deposit_collateral(&user, &usdc_id, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+        // Borrow only 500 XLM — position is clearly healthy.
+        client.borrow(&user, &5_000_000_000);
+
+        let seize_assets = soroban_sdk::vec![&env, usdc_id.clone(), sxlm_id.clone()];
+        client.liquidate(&liq, &user, &seize_assets);
+    }
+
+    // -------------------------------------------------------------------------
+    // Liquidation guard: seize_assets that don't cover full debt must revert
+    // -------------------------------------------------------------------------
+
+    /// If the liquidator lists only one asset in seize_assets but the borrower's
+    /// collateral in that asset is insufficient to cover the full debt-with-bonus,
+    /// the liquidation must revert.
+    #[test]
+    #[should_panic(expected = "insufficient collateral to cover debt")]
+    fn test_liquidation_insufficient_seize_assets_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let liq = Address::generate(&env);
+
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        pf.set_price(&usdc_id, &RATE_PRECISION);
+        pf.set_price(&sxlm_id, &RATE_PRECISION);
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        client.add_collateral(&usdc_id, &7000, &5000);
+        client.add_collateral(&sxlm_id, &7000, &5000);
+
+        // Borrower has 500 USDC + 500 sXLM; borrows 700 XLM → liquidatable.
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &5_000_000_000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &5_000_000_000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&liq, &100_000_0000000);
+
+        client.deposit_collateral(&user, &usdc_id, &5_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &5_000_000_000);
+        client.borrow(&user, &7_000_000_000);
+
+        // Liquidator only offers sXLM (only 500 XLM value at 1:1) but debt+bonus = 7350.
+        // USDC is omitted from seize_assets → cannot fully cover → must panic.
+        let seize_assets = soroban_sdk::vec![&env, sxlm_id.clone()];
+        client.liquidate(&liq, &user, &seize_assets);
+    }
+
+    // -------------------------------------------------------------------------
+    // Per-asset collateral totals after multi-collateral liquidation
+    // -------------------------------------------------------------------------
+
+    /// Verify `total_collateral_for_asset` is updated correctly for both assets
+    /// after a cross-asset liquidation.
+    #[test]
+    fn test_multi_collateral_liquidation_updates_totals() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+        let liq = Address::generate(&env);
+
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        pf.set_price(&usdc_id, &RATE_PRECISION);
+        pf.set_price(&sxlm_id, &RATE_PRECISION);
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        client.add_collateral(&usdc_id, &7000, &5000);
+        client.add_collateral(&sxlm_id, &7000, &5000);
+
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &5_000_000_000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &5_000_000_000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&liq, &100_000_0000000);
+
+        client.deposit_collateral(&user, &usdc_id, &5_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &5_000_000_000);
+        assert_eq!(client.total_collateral_for_asset(&usdc_id), 5_000_000_000);
+        assert_eq!(client.total_collateral_for_asset(&sxlm_id), 5_000_000_000);
+
+        client.borrow(&user, &7_000_000_000);
+
+        let seize_assets = soroban_sdk::vec![&env, usdc_id.clone(), sxlm_id.clone()];
+        client.liquidate(&liq, &user, &seize_assets);
+
+        // All USDC seized; sXLM partially seized (2 350 000 000 out of 5 000 000 000).
+        assert_eq!(client.total_collateral_for_asset(&usdc_id), 0);
+        assert_eq!(client.total_collateral_for_asset(&sxlm_id), 2_650_000_000);
+        assert_eq!(client.total_borrowed(), 0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Max-borrow respects per-asset CF when multiple assets are deposited
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_multi_collateral_max_borrow_uses_per_asset_cf() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        // Three assets: USDC (CF=80%), EURC (CF=75%), sXLM (CF=65%).
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let eurc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        pf.set_price(&usdc_id, &10_000_000);  // 1.0 XLM
+        pf.set_price(&eurc_id, &11_000_000);  // 1.1 XLM
+        pf.set_price(&sxlm_id, &9_500_000);   // 0.95 XLM
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        client.add_collateral(&usdc_id, &8000, &8500);
+        client.add_collateral(&eurc_id, &7500, &8500);
+        client.add_collateral(&sxlm_id, &6500, &7500);
+
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &eurc_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+
+        // Deposit 1 000 of each.
+        client.deposit_collateral(&user, &usdc_id, &10_000_000_000);
+        client.deposit_collateral(&user, &eurc_id, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+
+        // max_borrow = USDC: 10e9 * 1e7/1e7 * 8000/10000 = 8_000_000_000
+        //            + EURC: 10e9 * 1.1e7/1e7 * 7500/10000 = 11e9 * 0.75 = 8_250_000_000
+        //            + sXLM: 10e9 * 0.95e7/1e7 * 6500/10000 = 9.5e9 * 0.65 = 6_175_000_000
+        //          = 22_425_000_000
+        let mb = client.max_borrow(&user);
+        assert_eq!(mb, 22_425_000_000);
+
+        // Can borrow right at the limit.
+        client.borrow(&user, &22_425_000_000);
+        let (_, bor) = client.get_position(&user);
+        assert_eq!(bor, 22_425_000_000);
+    }
+
+    /// Borrow that would exceed the cross-asset limit must be rejected.
+    #[test]
+    #[should_panic(expected = "borrow exceeds collateral limit")]
+    fn test_multi_collateral_borrow_over_combined_limit_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let usdc_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let native_id =
+            env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        let pf_id = env.register_contract(None, mock_price_feed::MockPriceFeed);
+        let pf = MockPriceFeedClient::new(&env, &pf_id);
+        pf.set_price(&usdc_id, &RATE_PRECISION);
+        pf.set_price(&sxlm_id, &RATE_PRECISION);
+
+        let contract_id = env.register_contract(None, LendingContract);
+        let client = LendingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &native_id, &pf_id, &500);
+        client.add_collateral(&usdc_id, &8000, &8500);
+        client.add_collateral(&sxlm_id, &7000, &8000);
+
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+
+        client.deposit_collateral(&user, &usdc_id, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+
+        // max_borrow = 10e9 * 0.8 + 10e9 * 0.7 = 15_000_000_000.
+        // Attempting 15_000_000_001 must revert.
+        client.borrow(&user, &15_000_000_001);
+    }
 }
