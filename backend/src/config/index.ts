@@ -44,6 +44,20 @@ export const config = {
       "GOVERNANCE_CONTRACT_ID",
       "CB7LV3FBQ7US26GVC7SM7RMX22IEEHAEUL7V3TDDWM32DHA5TDFDDEP4"
     ),
+    // Wrapped collateral asset contract IDs on Stellar Soroban.
+    // Override via environment variables after deployment.
+    usdcContractId: requireEnv(
+      "USDC_CONTRACT_ID",
+      "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7SJMI75"
+    ),
+    eurcContractId: requireEnv(
+      "EURC_CONTRACT_ID",
+      "CCGFHMW3NZD5Z7ATHYHZSEG6ABCJADUHP5HIAWFPR37CP4VGNEDQO7FJ"
+    ),
+    yxlmContractId: requireEnv(
+      "YXLM_CONTRACT_ID",
+      "CCGFHMW3NZD5Z7ATHYHZSEG6ABCJADUHP5HIAWFPR37CP4VGNEDQO7FJ"
+    ),
   },
 
   server: {

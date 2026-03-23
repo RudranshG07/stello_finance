@@ -176,14 +176,14 @@ export class MetricAggregator {
 
       const [depositedAgg, borrowedAgg] = await Promise.all([
         this.prisma.collateralPosition.aggregate({
-          _sum: { sxlmDeposited: true },
+          _sum: { amountDeposited: true },
         }),
         this.prisma.collateralPosition.aggregate({
           _sum: { xlmBorrowed: true },
         }),
       ]);
 
-      totalDeposited = depositedAgg._sum.sxlmDeposited ?? BigInt(0);
+      totalDeposited = depositedAgg._sum.amountDeposited ?? BigInt(0);
       totalBorrowed = borrowedAgg._sum.xlmBorrowed ?? BigInt(0);
     }
 

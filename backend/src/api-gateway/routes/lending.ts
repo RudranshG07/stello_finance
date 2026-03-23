@@ -12,19 +12,49 @@ import {
 import { config } from "../../config/index.js";
 import { PrismaClient } from "@prisma/client";
 
+// Supported collateral assets — must match what is registered in the lending contract.
+const SUPPORTED_ASSETS = [
+  {
+    contractId: config.contracts.sxlmTokenContractId,
+    symbol: "sXLM",
+    defaultCfBps: 7500,
+    defaultLtBps: 8000,
+  },
+  {
+    contractId: config.contracts.usdcContractId,
+    symbol: "USDC",
+    defaultCfBps: 9000,
+    defaultLtBps: 9200,
+  },
+  {
+    contractId: config.contracts.eurcContractId,
+    symbol: "EURC",
+    defaultCfBps: 8800,
+    defaultLtBps: 9000,
+  },
+  {
+    contractId: config.contracts.yxlmContractId,
+    symbol: "yXLM",
+    defaultCfBps: 7000,
+    defaultLtBps: 7500,
+  },
+] as const;
+
 const amountSchema = z.object({
   userAddress: z.string().min(56).max(56),
   amount: z.number().positive(),
+  /** Collateral asset contract ID. Defaults to sXLM when omitted. */
+  asset: z.string().min(56).max(56).optional(),
 });
 
 const liquidateSchema = z.object({
   liquidatorAddress: z.string().min(56).max(56),
   borrowerAddress: z.string().min(56).max(56),
+  /** Which collateral asset to seize. Defaults to sXLM when omitted. */
+  collateralAsset: z.string().min(56).max(56).optional(),
 });
 
-// Higher inclusion fee to avoid txINSUFFICIENT_FEE when simulation
-// slightly underestimates resource costs. assembleTransaction adds
-// minResourceFee on top of this, so the total is well above the minimum.
+// Higher inclusion fee to avoid txINSUFFICIENT_FEE during simulation.
 const SOROBAN_FEE = "2000000"; // 0.2 XLM
 
 async function buildContractTx(
@@ -50,22 +80,29 @@ async function buildContractTx(
 
   if (rpc.Api.isSimulationError(simResult)) {
     const errStr = String(simResult.error);
-    // Translate common WASM trap errors into human-readable messages
     if (errStr.includes("UnreachableCodeReached")) {
       if (method === "deposit_collateral") {
-        throw new Error("Insufficient sXLM balance. Stake XLM first to receive sXLM, then deposit it as collateral.");
+        throw new Error(
+          "Insufficient asset balance. Make sure you hold the selected collateral token."
+        );
       }
       if (method === "withdraw_collateral") {
-        throw new Error("Withdrawal would make your position unhealthy, or you have no collateral deposited.");
+        throw new Error(
+          "Withdrawal would make your position unhealthy, or you have no collateral deposited."
+        );
       }
       if (method === "borrow") {
-        throw new Error("Borrow exceeds your collateral limit. Deposit more sXLM or reduce the borrow amount.");
+        throw new Error(
+          "Borrow exceeds your collateral limit. Deposit more collateral or reduce the borrow amount."
+        );
       }
       if (method === "repay") {
         throw new Error("Repay amount exceeds your outstanding debt.");
       }
       if (method === "liquidate") {
-        throw new Error("This position cannot be liquidated — it may already be healthy or have no debt.");
+        throw new Error(
+          "This position cannot be liquidated — it may already be healthy or have no debt."
+        );
       }
     }
     throw new Error(`Simulation failed: ${simResult.error}`);
@@ -113,26 +150,66 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
   const lendingContractId = config.contracts.lendingContractId;
 
   /**
+   * GET /lending/assets
+   * Returns all supported collateral assets with their on-chain config.
+   */
+  fastify.get("/lending/assets", async () => {
+    const results = await Promise.allSettled(
+      SUPPORTED_ASSETS.map(async (a) => {
+        try {
+          const cfg = await queryContractView(
+            server,
+            lendingContractId,
+            "get_asset_config",
+            [new Address(a.contractId).toScVal()]
+          );
+          return {
+            contractId: a.contractId,
+            symbol: a.symbol,
+            collateralFactorBps: cfg ? Number(cfg.collateral_factor_bps) : a.defaultCfBps,
+            liquidationThresholdBps: cfg
+              ? Number(cfg.liquidation_threshold_bps)
+              : a.defaultLtBps,
+            priceInXlm: cfg ? Number(cfg.price_in_xlm) / 1e7 : 1,
+            enabled: cfg ? Boolean(cfg.enabled) : false,
+          };
+        } catch {
+          return {
+            contractId: a.contractId,
+            symbol: a.symbol,
+            collateralFactorBps: a.defaultCfBps,
+            liquidationThresholdBps: a.defaultLtBps,
+            priceInXlm: 1,
+            enabled: false,
+          };
+        }
+      })
+    );
+
+    return results.map((r) => (r.status === "fulfilled" ? r.value : null)).filter(Boolean);
+  });
+
+  /**
    * POST /lending/deposit-collateral
-   * Build unsigned tx: deposit sXLM as collateral.
+   * Build unsigned tx: deposit a supported collateral asset.
    */
   fastify.post("/lending/deposit-collateral", async (request, reply) => {
     try {
       const body = amountSchema.parse(request.body);
+      const assetId = body.asset ?? config.contracts.sxlmTokenContractId;
       const stroops = BigInt(Math.floor(body.amount * 1e7));
 
-      // Pre-flight: check user has enough sXLM before simulating
-      const sxlmRaw = await queryContractView(
-        server,
-        config.contracts.sxlmTokenContractId,
-        "balance",
-        [new Address(body.userAddress).toScVal()]
-      );
-      const sxlmBalance = BigInt(sxlmRaw ?? 0);
-      if (sxlmBalance < stroops) {
-        const available = (Number(sxlmBalance) / 1e7).toFixed(7);
+      // Pre-flight: check user holds enough of the collateral asset.
+      const balanceRaw = await queryContractView(server, assetId, "balance", [
+        new Address(body.userAddress).toScVal(),
+      ]);
+      const balance = BigInt(balanceRaw ?? 0);
+      if (balance < stroops) {
+        const available = (Number(balance) / 1e7).toFixed(7);
+        const assetMeta = SUPPORTED_ASSETS.find((a) => a.contractId === assetId);
+        const symbol = assetMeta?.symbol ?? "tokens";
         return reply.status(400).send({
-          error: `Insufficient sXLM balance. You have ${available} sXLM but tried to deposit ${body.amount} sXLM. Stake XLM first to receive sXLM.`,
+          error: `Insufficient ${symbol} balance. You have ${available} ${symbol} but tried to deposit ${body.amount}.`,
         });
       }
 
@@ -142,6 +219,7 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         "deposit_collateral",
         [
           new Address(body.userAddress).toScVal(),
+          new Address(assetId).toScVal(),
           nativeToScVal(stroops, { type: "i128" }),
         ],
         body.userAddress
@@ -149,18 +227,20 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Deposit failed";
-      reply.status(400).send({ error: message });
+      const message =
+        err instanceof Error ? err.message : String(err) || "Deposit failed";
+      return reply.status(400).send({ error: message });
     }
   });
 
   /**
    * POST /lending/withdraw-collateral
-   * Build unsigned tx: withdraw sXLM collateral.
+   * Build unsigned tx: withdraw collateral.
    */
   fastify.post("/lending/withdraw-collateral", async (request, reply) => {
     try {
       const body = amountSchema.parse(request.body);
+      const assetId = body.asset ?? config.contracts.sxlmTokenContractId;
       const stroops = BigInt(Math.floor(body.amount * 1e7));
 
       const result = await buildContractTx(
@@ -169,6 +249,7 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         "withdraw_collateral",
         [
           new Address(body.userAddress).toScVal(),
+          new Address(assetId).toScVal(),
           nativeToScVal(stroops, { type: "i128" }),
         ],
         body.userAddress
@@ -176,27 +257,32 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Withdraw failed";
-      reply.status(400).send({ error: message });
+      const message =
+        err instanceof Error ? err.message : String(err) || "Withdraw failed";
+      return reply.status(400).send({ error: message });
     }
   });
 
   /**
    * POST /lending/borrow
-   * Build unsigned tx: borrow XLM against sXLM collateral.
+   * Build unsigned tx: borrow XLM against deposited collateral.
    */
   fastify.post("/lending/borrow", async (request, reply) => {
     try {
       const body = amountSchema.parse(request.body);
       const stroops = BigInt(Math.floor(body.amount * 1e7));
 
-      // Pre-flight: check pool has enough XLM liquidity
-      const poolBalRaw = await queryContractView(server, lendingContractId, "get_pool_balance", []);
+      const poolBalRaw = await queryContractView(
+        server,
+        lendingContractId,
+        "get_pool_balance",
+        []
+      );
       const poolBalance = BigInt(poolBalRaw ?? 0);
       if (poolBalance < stroops) {
         const available = (Number(poolBalance) / 1e7).toFixed(7);
         return reply.status(400).send({
-          error: `Insufficient pool liquidity. Pool has ${available} XLM available but you tried to borrow ${body.amount} XLM.`,
+          error: `Insufficient pool liquidity. Pool has ${available} XLM available.`,
         });
       }
 
@@ -213,8 +299,9 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Borrow failed";
-      reply.status(400).send({ error: message });
+      const message =
+        err instanceof Error ? err.message : String(err) || "Borrow failed";
+      return reply.status(400).send({ error: message });
     }
   });
 
@@ -240,8 +327,9 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Repay failed";
-      reply.status(400).send({ error: message });
+      const message =
+        err instanceof Error ? err.message : String(err) || "Repay failed";
+      return reply.status(400).send({ error: message });
     }
   });
 
@@ -252,6 +340,8 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
   fastify.post("/lending/liquidate", async (request, reply) => {
     try {
       const body = liquidateSchema.parse(request.body);
+      const collateralAsset =
+        body.collateralAsset ?? config.contracts.sxlmTokenContractId;
 
       const result = await buildContractTx(
         server,
@@ -260,139 +350,167 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         [
           new Address(body.liquidatorAddress).toScVal(),
           new Address(body.borrowerAddress).toScVal(),
+          new Address(collateralAsset).toScVal(),
         ],
         body.liquidatorAddress
       );
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Liquidation failed";
-      reply.status(400).send({ error: message });
+      const message =
+        err instanceof Error ? err.message : String(err) || "Liquidation failed";
+      return reply.status(400).send({ error: message });
     }
   });
 
   /**
    * GET /lending/position/:wallet
-   * Query on-chain position via contract view + sync to DB.
+   * Returns on-chain position with per-asset breakdown.
    */
   fastify.get("/lending/position/:wallet", async (request, reply) => {
     try {
       const { wallet } = request.params as { wallet: string };
+      const userScVal = new Address(wallet).toScVal();
 
-      // Query on-chain position + protocol params in parallel
-      const [position, healthFactor, cfBpsRaw, erRaw] = await Promise.all([
-        queryContractView(server, lendingContractId, "get_position", [new Address(wallet).toScVal()]),
-        queryContractView(server, lendingContractId, "health_factor", [new Address(wallet).toScVal()]),
-        queryContractView(server, lendingContractId, "get_collateral_factor", []),
-        queryContractView(server, lendingContractId, "get_exchange_rate", []),
+      const [position, healthFactor, maxBorrowRaw] = await Promise.all([
+        queryContractView(server, lendingContractId, "get_position", [userScVal]),
+        queryContractView(server, lendingContractId, "health_factor", [userScVal]),
+        queryContractView(server, lendingContractId, "get_user_max_borrow", [userScVal]),
       ]);
 
-      let collateral = BigInt(0);
+      let totalCollateralXlm = BigInt(0);
       let borrowed = BigInt(0);
       let hf = 0;
-
       if (position) {
-        // get_position returns (i128, i128) tuple
-        collateral = BigInt(position[0] ?? 0);
+        totalCollateralXlm = BigInt(position[0] ?? 0);
         borrowed = BigInt(position[1] ?? 0);
       }
       if (healthFactor !== null) {
-        hf = Number(healthFactor) / 1e7; // RATE_PRECISION
+        hf = Number(healthFactor) / 1e7;
       }
+      const maxBorrow = Number(maxBorrowRaw ?? 0) / 1e7;
 
-      // Compute max borrow matching the contract formula:
-      // max_borrow_stroops = collateral * er * cf_bps / (10000 * RATE_PRECISION)
-      const cfBps = Number(cfBpsRaw ?? 7000);
-      const er = Number(erRaw ?? 10_000_000); // in RATE_PRECISION units
-      const maxBorrowStroops = (Number(collateral) * er * cfBps) / (10000 * 1e7);
-      const maxBorrow = maxBorrowStroops / 1e7;
 
-      // Sync to DB
-      if (collateral > 0 || borrowed > 0) {
-        const existing = await prisma.collateralPosition.findFirst({
-          where: { wallet },
+      const assetPositions = await Promise.allSettled(
+        SUPPORTED_ASSETS.map(async (a) => {
+          const amountRaw = await queryContractView(
+            server,
+            lendingContractId,
+            "get_asset_position",
+            [userScVal, new Address(a.contractId).toScVal()]
+          );
+          const amount = BigInt(amountRaw ?? 0);
+
+
+          const cfgRaw = await queryContractView(
+            server,
+            lendingContractId,
+            "get_asset_config",
+            [new Address(a.contractId).toScVal()]
+          );
+
+          const priceInXlm = cfgRaw ? Number(cfgRaw.price_in_xlm) / 1e7 : 1;
+          return {
+            contractId: a.contractId,
+            symbol: a.symbol,
+            amountDeposited: Number(amount) / 1e7,
+            amountDepositedRaw: amount.toString(),
+            xlmValue: (Number(amount) / 1e7) * priceInXlm,
+            collateralFactorBps: cfgRaw
+              ? Number(cfgRaw.collateral_factor_bps)
+              : a.defaultCfBps,
+            liquidationThresholdBps: cfgRaw
+              ? Number(cfgRaw.liquidation_threshold_bps)
+              : a.defaultLtBps,
+            priceInXlm,
+          };
+        })
+      );
+
+      const assetBreakdown = assetPositions
+        .map((r) => (r.status === "fulfilled" ? r.value : null))
+        .filter(Boolean);
+
+      if (totalCollateralXlm > 0 || borrowed > 0) {
+        await prisma.collateralPosition.upsert({
+          where: { wallet_collateralAsset: { wallet, collateralAsset: "AGGREGATE" } },
+          update: {
+            amountDeposited: totalCollateralXlm,
+            xlmBorrowed: borrowed,
+            healthFactor: hf,
+            updatedAt: new Date(),
+          },
+          create: {
+            wallet,
+            collateralAsset: "AGGREGATE",
+            amountDeposited: totalCollateralXlm,
+            xlmBorrowed: borrowed,
+            healthFactor: hf,
+          },
         });
-        if (existing) {
-          await prisma.collateralPosition.update({
-            where: { id: existing.id },
-            data: {
-              sxlmDeposited: collateral,
-              xlmBorrowed: borrowed,
-              healthFactor: hf,
-              updatedAt: new Date(),
-            },
-          });
-        } else {
-          await prisma.collateralPosition.create({
-            data: {
-              wallet,
-              sxlmDeposited: collateral,
-              xlmBorrowed: borrowed,
-              healthFactor: hf,
-            },
-          });
-        }
       }
 
       return {
         wallet,
-        sxlmDeposited: Number(collateral) / 1e7,
-        sxlmDepositedRaw: collateral.toString(),
+        totalCollateralXlm: Number(totalCollateralXlm) / 1e7,
+        totalCollateralXlmRaw: totalCollateralXlm.toString(),
         xlmBorrowed: Number(borrowed) / 1e7,
         xlmBorrowedRaw: borrowed.toString(),
         healthFactor: hf,
         maxBorrow,
-        collateralFactorBps: cfBps,
-        exchangeRate: er / 1e7,
+        assetPositions: assetBreakdown,
       };
     } catch (err: unknown) {
-      // Fallback to DB if contract query fails
+      // Fallback to DB.
       const { wallet } = request.params as { wallet: string };
       const dbPosition = await prisma.collateralPosition.findFirst({
-        where: { wallet },
+        where: { wallet, collateralAsset: "AGGREGATE" },
         orderBy: { updatedAt: "desc" },
       });
       return dbPosition
         ? {
             wallet,
-            sxlmDeposited: Number(dbPosition.sxlmDeposited) / 1e7,
-            sxlmDepositedRaw: dbPosition.sxlmDeposited.toString(),
+            totalCollateralXlm: Number(dbPosition.amountDeposited) / 1e7,
+            totalCollateralXlmRaw: dbPosition.amountDeposited.toString(),
             xlmBorrowed: Number(dbPosition.xlmBorrowed) / 1e7,
             xlmBorrowedRaw: dbPosition.xlmBorrowed.toString(),
             healthFactor: dbPosition.healthFactor,
-            maxBorrow: 0, // cannot compute without on-chain CF/ER
-            collateralFactorBps: 7000,
-            exchangeRate: 1,
+            maxBorrow: 0,
+            assetPositions: [],
           }
         : {
             wallet,
-            sxlmDeposited: 0,
-            sxlmDepositedRaw: "0",
+            totalCollateralXlm: 0,
+            totalCollateralXlmRaw: "0",
             xlmBorrowed: 0,
             xlmBorrowedRaw: "0",
             healthFactor: 0,
             maxBorrow: 0,
-            collateralFactorBps: 7000,
-            exchangeRate: 1,
+            assetPositions: [],
           };
     }
   });
 
   /**
    * GET /lending/stats
-   * Query on-chain lending stats.
+   * Protocol-level lending statistics.
    */
   fastify.get("/lending/stats", async () => {
     try {
-      const [totalCollateral, totalBorrowed, cfBpsRaw, ltBpsRaw, borrowRateBpsRaw, poolBalanceRaw] =
+      const [totalCollateral, totalBorrowed, borrowRateBpsRaw, poolBalanceRaw] =
         await Promise.all([
           queryContractView(server, lendingContractId, "total_collateral", []),
           queryContractView(server, lendingContractId, "total_borrowed", []),
-          queryContractView(server, lendingContractId, "get_collateral_factor", []),
-          queryContractView(server, lendingContractId, "get_liquidation_threshold", []),
           queryContractView(server, lendingContractId, "get_borrow_rate", []),
           queryContractView(server, lendingContractId, "get_pool_balance", []),
         ]);
+
+      const sxlmCfg = await queryContractView(
+        server,
+        lendingContractId,
+        "get_asset_config",
+        [new Address(config.contracts.sxlmTokenContractId).toScVal()]
+      );
 
       const tc = Number(totalCollateral ?? 0);
       const tb = Number(totalBorrowed ?? 0);
@@ -403,8 +521,10 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         totalBorrowed: tb / 1e7,
         totalBorrowedRaw: (totalBorrowed ?? 0).toString(),
         poolBalance: Number(poolBalanceRaw ?? 0) / 1e7,
-        collateralFactorBps: Number(cfBpsRaw ?? 7000),
-        liquidationThresholdBps: Number(ltBpsRaw ?? 8000),
+        collateralFactorBps: sxlmCfg ? Number(sxlmCfg.collateral_factor_bps) : 7500,
+        liquidationThresholdBps: sxlmCfg
+          ? Number(sxlmCfg.liquidation_threshold_bps)
+          : 8000,
         borrowRateBps: Number(borrowRateBpsRaw ?? 500),
         utilizationRate: tc > 0 ? tb / tc : 0,
       };
@@ -415,7 +535,7 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         totalBorrowed: 0,
         totalBorrowedRaw: "0",
         poolBalance: 0,
-        collateralFactorBps: 7000,
+        collateralFactorBps: 7500,
         liquidationThresholdBps: 8000,
         borrowRateBps: 500,
         utilizationRate: 0,

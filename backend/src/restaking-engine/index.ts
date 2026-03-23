@@ -215,7 +215,7 @@ export class RestakingEngine {
       };
     }
 
-    const collateral = Number(position.sxlmDeposited) / 1e7;
+    const collateral = Number(position.amountDeposited) / 1e7;
     const borrowed = Number(position.xlmBorrowed) / 1e7;
     const effectiveLeverage =
       collateral > 0 && borrowed > 0

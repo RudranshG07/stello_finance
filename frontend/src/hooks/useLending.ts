@@ -3,11 +3,32 @@ import axios from '../lib/apiClient';
 import { API_BASE_URL } from '../config/contracts';
 import { useWallet } from './useWallet';
 
+export interface AssetPosition {
+  contractId: string;
+  symbol: string;
+  amountDeposited: number;
+  amountDepositedRaw: string;
+  xlmValue: number;
+  collateralFactorBps: number;
+  liquidationThresholdBps: number;
+  priceInXlm: number;
+}
+
+export interface SupportedAsset {
+  contractId: string;
+  symbol: string;
+  collateralFactorBps: number;
+  liquidationThresholdBps: number;
+  priceInXlm: number;
+  enabled: boolean;
+}
+
 interface LendingPosition {
-  sxlmDeposited: number;
+  totalCollateralXlm: number;
   xlmBorrowed: number;
   healthFactor: number;
   maxBorrow: number;
+  assetPositions: AssetPosition[];
 }
 
 interface LendingStats {
@@ -23,32 +44,36 @@ interface LendingStats {
 interface UseLendingReturn {
   position: LendingPosition;
   stats: LendingStats;
+  supportedAssets: SupportedAsset[];
+  selectedAsset: string;
+  setSelectedAsset: (assetId: string) => void;
   isLoading: boolean;
   isSubmitting: boolean;
   isPending: boolean;
   error: string | null;
   lastTxHash: string | null;
-  depositCollateral: (amount: number) => Promise<boolean>;
-  withdrawCollateral: (amount: number) => Promise<boolean>;
+  depositCollateral: (amount: number, asset?: string) => Promise<boolean>;
+  withdrawCollateral: (amount: number, asset?: string) => Promise<boolean>;
   borrow: (amount: number) => Promise<boolean>;
   repay: (amount: number) => Promise<boolean>;
-  liquidate: (borrowerAddress: string) => Promise<boolean>;
+  liquidate: (borrowerAddress: string, collateralAsset?: string) => Promise<boolean>;
   clearError: () => void;
   refresh: () => Promise<void>;
 }
 
 const DEFAULT_POSITION: LendingPosition = {
-  sxlmDeposited: 0,
+  totalCollateralXlm: 0,
   xlmBorrowed: 0,
   healthFactor: 0,
   maxBorrow: 0,
+  assetPositions: [],
 };
 
 const DEFAULT_STATS: LendingStats = {
   totalCollateral: 0,
   totalBorrowed: 0,
   poolBalance: 0,
-  collateralFactorBps: 7000,
+  collateralFactorBps: 7500,
   liquidationThresholdBps: 8000,
   borrowRateBps: 500,
   utilizationRate: 0,
@@ -58,6 +83,8 @@ export function useLending(): UseLendingReturn {
   const { publicKey, isConnected, signTransaction, getAuthHeaders } = useWallet();
   const [position, setPosition] = useState<LendingPosition>(DEFAULT_POSITION);
   const [stats, setStats] = useState<LendingStats>(DEFAULT_STATS);
+  const [supportedAssets, setSupportedAssets] = useState<SupportedAsset[]>([]);
+  const [selectedAsset, setSelectedAsset] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isPending, setIsPending] = useState(false);
@@ -68,8 +95,9 @@ export function useLending(): UseLendingReturn {
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, posRes] = await Promise.allSettled([
+      const [statsRes, assetsRes, posRes] = await Promise.allSettled([
         axios.get(`${API_BASE_URL}/api/lending/stats`),
+        axios.get(`${API_BASE_URL}/api/lending/assets`),
         publicKey
           ? axios.get(`${API_BASE_URL}/api/lending/position/${publicKey}`)
           : Promise.resolve(null),
@@ -78,14 +106,24 @@ export function useLending(): UseLendingReturn {
       if (statsRes.status === 'fulfilled' && statsRes.value) {
         setStats(statsRes.value.data);
       }
+
+      if (assetsRes.status === 'fulfilled' && assetsRes.value?.data) {
+        const assets: SupportedAsset[] = assetsRes.value.data.filter(Boolean);
+        setSupportedAssets(assets);
+        // Set default selected asset to first enabled asset (sXLM).
+        if (!selectedAsset && assets.length > 0) {
+          setSelectedAsset(assets[0].contractId);
+        }
+      }
+
       if (posRes.status === 'fulfilled' && posRes.value?.data) {
         setPosition(posRes.value.data);
       }
     } catch {
-      // Keep defaults
+      // Keep defaults on error.
     }
     setIsLoading(false);
-  }, [publicKey]);
+  }, [publicKey, selectedAsset]);
 
   useEffect(() => {
     fetchData();
@@ -106,7 +144,6 @@ export function useLending(): UseLendingReturn {
       setIsPending(false);
 
       try {
-        // Step 1: Build unsigned tx
         const { data: txData } = await axios.post(
           `${API_BASE_URL}/api/lending/${endpoint}`,
           { userAddress: publicKey, ...payload },
@@ -114,16 +151,12 @@ export function useLending(): UseLendingReturn {
         );
 
         if (txData.xdr) {
-          // Step 2: Sign with Freighter
           const signedXdr = await signTransaction(txData.xdr, txData.networkPassphrase);
-
-          // Step 3: Submit
           const { data: submitData } = await axios.post(
             `${API_BASE_URL}/api/staking/submit`,
             { signedXdr },
             { headers: getAuthHeaders() }
           );
-
           setLastTxHash(submitData.txHash);
           setIsPending(submitData.pending ?? false);
         }
@@ -147,13 +180,15 @@ export function useLending(): UseLendingReturn {
   );
 
   const depositCollateral = useCallback(
-    (amount: number) => submitContractTx('deposit-collateral', { amount }),
-    [submitContractTx]
+    (amount: number, asset?: string) =>
+      submitContractTx('deposit-collateral', { amount, asset: asset ?? selectedAsset }),
+    [submitContractTx, selectedAsset]
   );
 
   const withdrawCollateral = useCallback(
-    (amount: number) => submitContractTx('withdraw-collateral', { amount }),
-    [submitContractTx]
+    (amount: number, asset?: string) =>
+      submitContractTx('withdraw-collateral', { amount, asset: asset ?? selectedAsset }),
+    [submitContractTx, selectedAsset]
   );
 
   const borrow = useCallback(
@@ -167,7 +202,7 @@ export function useLending(): UseLendingReturn {
   );
 
   const liquidate = useCallback(
-    async (borrowerAddress: string): Promise<boolean> => {
+    async (borrowerAddress: string, collateralAsset?: string): Promise<boolean> => {
       if (!isConnected || !publicKey) {
         setError('Please connect your wallet first');
         return false;
@@ -181,7 +216,7 @@ export function useLending(): UseLendingReturn {
       try {
         const { data: txData } = await axios.post(
           `${API_BASE_URL}/api/lending/liquidate`,
-          { liquidatorAddress: publicKey, borrowerAddress },
+          { liquidatorAddress: publicKey, borrowerAddress, collateralAsset },
           { headers: getAuthHeaders() }
         );
 
@@ -217,6 +252,9 @@ export function useLending(): UseLendingReturn {
   return {
     position,
     stats,
+    supportedAssets,
+    selectedAsset,
+    setSelectedAsset,
     isLoading,
     isSubmitting,
     isPending,

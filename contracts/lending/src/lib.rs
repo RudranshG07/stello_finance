@@ -1,19 +1,32 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
 
 const BPS_DENOMINATOR: i128 = 10_000;
 const RATE_PRECISION: i128 = 10_000_000; // 1e7
 const DEFAULT_LIQUIDATION_BONUS_BPS: i128 = 500; // 5% bonus
 
 // ---------- TTL constants ----------
-// Testnet: ~5s per ledger
-// 30 days  ≈  518_400 ledgers
-// 180 days ≈ 3_110_400 ledgers
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400;        // bump to ~30 days
-const USER_LIFETIME_THRESHOLD: u32 = 518_400;     // ~30 days
-const USER_BUMP_AMOUNT: u32 = 3_110_400;          // bump to ~180 days
+const INSTANCE_BUMP_AMOUNT: u32 = 518_400;         // bump to ~30 days
+const USER_LIFETIME_THRESHOLD: u32 = 518_400;      // ~30 days
+const USER_BUMP_AMOUNT: u32 = 3_110_400;           // bump to ~180 days
+
+#[derive(Clone)]
+#[contracttype]
+pub struct AssetConfig {
+    pub collateral_factor_bps: i128,
+    pub liquidation_threshold_bps: i128,
+    pub price_in_xlm: i128, // scaled by RATE_PRECISION
+    pub enabled: bool,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct UserAssetKey {
+    pub user: Address,
+    pub asset: Address,
+}
 
 #[derive(Clone)]
 #[contracttype]
@@ -21,15 +34,14 @@ pub enum DataKey {
     Admin,
     SxlmToken,
     NativeToken,
-    CollateralFactorBps,
-    LiquidationThresholdBps,
     BorrowRateBps,
     LiquidationBonusBps,
-    ExchangeRate, // sXLM → XLM rate (scaled by RATE_PRECISION)
     Initialized,
     TotalCollateral,
     TotalBorrowed,
-    Collateral(Address),
+    SupportedAssets,
+    AssetConfig(Address),
+    AssetCollateral(UserAssetKey),
     Borrowed(Address),
 }
 
@@ -39,21 +51,6 @@ fn extend_instance(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-}
-
-fn extend_user_data(env: &Env, user: &Address) {
-    let col_key = DataKey::Collateral(user.clone());
-    let bor_key = DataKey::Borrowed(user.clone());
-    if env.storage().persistent().has(&col_key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&col_key, USER_LIFETIME_THRESHOLD, USER_BUMP_AMOUNT);
-    }
-    if env.storage().persistent().has(&bor_key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&bor_key, USER_LIFETIME_THRESHOLD, USER_BUMP_AMOUNT);
-    }
 }
 
 fn read_i128(env: &Env, key: &DataKey) -> i128 {
@@ -76,20 +73,6 @@ fn read_native_token(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::NativeToken).unwrap()
 }
 
-fn read_collateral_factor(env: &Env) -> i128 {
-    env.storage()
-        .instance()
-        .get(&DataKey::CollateralFactorBps)
-        .unwrap_or(7000) // 70% default
-}
-
-fn read_liquidation_threshold(env: &Env) -> i128 {
-    env.storage()
-        .instance()
-        .get(&DataKey::LiquidationThresholdBps)
-        .unwrap_or(8000) // 80% default
-}
-
 fn read_liquidation_bonus(env: &Env) -> i128 {
     env.storage()
         .instance()
@@ -97,15 +80,31 @@ fn read_liquidation_bonus(env: &Env) -> i128 {
         .unwrap_or(DEFAULT_LIQUIDATION_BONUS_BPS)
 }
 
-fn read_exchange_rate(env: &Env) -> i128 {
+fn read_asset_config(env: &Env, asset: &Address) -> AssetConfig {
     env.storage()
         .instance()
-        .get(&DataKey::ExchangeRate)
-        .unwrap_or(RATE_PRECISION) // 1:1 default
+        .get(&DataKey::AssetConfig(asset.clone()))
+        .expect("asset not configured")
 }
 
-fn read_user_collateral(env: &Env, user: &Address) -> i128 {
-    let key = DataKey::Collateral(user.clone());
+fn write_asset_config(env: &Env, asset: &Address, config: &AssetConfig) {
+    env.storage()
+        .instance()
+        .set(&DataKey::AssetConfig(asset.clone()), config);
+}
+
+fn read_supported_assets(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&DataKey::SupportedAssets)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn read_user_asset_collateral(env: &Env, user: &Address, asset: &Address) -> i128 {
+    let key = DataKey::AssetCollateral(UserAssetKey {
+        user: user.clone(),
+        asset: asset.clone(),
+    });
     let val: i128 = env.storage().persistent().get(&key).unwrap_or(0);
     if val > 0 {
         env.storage()
@@ -115,8 +114,11 @@ fn read_user_collateral(env: &Env, user: &Address) -> i128 {
     val
 }
 
-fn write_user_collateral(env: &Env, user: &Address, val: i128) {
-    let key = DataKey::Collateral(user.clone());
+fn write_user_asset_collateral(env: &Env, user: &Address, asset: &Address, val: i128) {
+    let key = DataKey::AssetCollateral(UserAssetKey {
+        user: user.clone(),
+        asset: asset.clone(),
+    });
     env.storage().persistent().set(&key, &val);
     env.storage()
         .persistent()
@@ -142,15 +144,55 @@ fn write_user_borrowed(env: &Env, user: &Address, val: i128) {
         .extend_ttl(&key, USER_LIFETIME_THRESHOLD, USER_BUMP_AMOUNT);
 }
 
-/// Health Factor = (collateral × exchange_rate × collateral_factor_bps) / (BPS × RATE_PRECISION × borrowed)
-/// Returns HF scaled by RATE_PRECISION (so 1.0 = RATE_PRECISION)
-fn compute_health_factor(collateral: i128, borrowed: i128, cf_bps: i128, exchange_rate: i128) -> i128 {
-    if borrowed == 0 {
-        return i128::MAX; // No debt = infinite health
+fn compute_total_collateral_value(env: &Env, user: &Address) -> i128 {
+    let supported = read_supported_assets(env);
+    let mut total: i128 = 0;
+    for asset in supported.iter() {
+        let amount = read_user_asset_collateral(env, user, &asset);
+        if amount == 0 {
+            continue;
+        }
+        let config = read_asset_config(env, &asset);
+        total += amount * config.price_in_xlm / RATE_PRECISION;
     }
-    // HF = (collateral * exchange_rate * cf_bps) / (BPS_DENOMINATOR * RATE_PRECISION * borrowed) * RATE_PRECISION
-    // Simplified: (collateral * exchange_rate * cf_bps) / (BPS_DENOMINATOR * borrowed)
-    (collateral * exchange_rate * cf_bps) / (BPS_DENOMINATOR * borrowed)
+    total
+}
+
+fn compute_max_borrow(env: &Env, user: &Address) -> i128 {
+    let supported = read_supported_assets(env);
+    let mut max_borrow: i128 = 0;
+    for asset in supported.iter() {
+        let amount = read_user_asset_collateral(env, user, &asset);
+        if amount == 0 {
+            continue;
+        }
+        let config = read_asset_config(env, &asset);
+        max_borrow +=
+            amount * config.price_in_xlm * config.collateral_factor_bps
+                / (RATE_PRECISION * BPS_DENOMINATOR);
+    }
+    max_borrow
+}
+
+// HF = Σ(amount_i * price_i * lt_i) * RATE_PRECISION / (BPS_DENOMINATOR * borrowed)
+// scaled by RATE_PRECISION — 1.0 = RATE_PRECISION
+fn compute_health_factor_multi(env: &Env, user: &Address, borrowed: i128) -> i128 {
+    if borrowed == 0 {
+        return i128::MAX;
+    }
+    let supported = read_supported_assets(env);
+    let mut weighted: i128 = 0;
+    for asset in supported.iter() {
+        let amount = read_user_asset_collateral(env, user, &asset);
+        if amount == 0 {
+            continue;
+        }
+        let config = read_asset_config(env, &asset);
+        weighted +=
+            amount * config.price_in_xlm * config.liquidation_threshold_bps
+                / (RATE_PRECISION * BPS_DENOMINATOR);
+    }
+    weighted * RATE_PRECISION / borrowed
 }
 
 #[contract]
@@ -158,7 +200,6 @@ pub struct LendingContract;
 
 #[contractimpl]
 impl LendingContract {
-    /// Initialize the lending contract.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -168,7 +209,11 @@ impl LendingContract {
         liquidation_threshold_bps: u32,
         borrow_rate_bps: u32,
     ) {
-        let already: bool = env.storage().instance().get(&DataKey::Initialized).unwrap_or(false);
+        let already: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Initialized)
+            .unwrap_or(false);
         if already {
             panic!("already initialized");
         }
@@ -176,11 +221,27 @@ impl LendingContract {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::SxlmToken, &sxlm_token);
         env.storage().instance().set(&DataKey::NativeToken, &native_token);
-        env.storage().instance().set(&DataKey::CollateralFactorBps, &(collateral_factor_bps as i128));
-        env.storage().instance().set(&DataKey::LiquidationThresholdBps, &(liquidation_threshold_bps as i128));
-        env.storage().instance().set(&DataKey::BorrowRateBps, &(borrow_rate_bps as i128));
-        env.storage().instance().set(&DataKey::LiquidationBonusBps, &DEFAULT_LIQUIDATION_BONUS_BPS);
-        env.storage().instance().set(&DataKey::ExchangeRate, &RATE_PRECISION); // 1:1 initial
+        env.storage()
+            .instance()
+            .set(&DataKey::BorrowRateBps, &(borrow_rate_bps as i128));
+        env.storage()
+            .instance()
+            .set(&DataKey::LiquidationBonusBps, &DEFAULT_LIQUIDATION_BONUS_BPS);
+
+        let sxlm_config = AssetConfig {
+            collateral_factor_bps: collateral_factor_bps as i128,
+            liquidation_threshold_bps: liquidation_threshold_bps as i128,
+            price_in_xlm: RATE_PRECISION, // 1:1 initial
+            enabled: true,
+        };
+        write_asset_config(&env, &sxlm_token, &sxlm_config);
+
+        let mut assets: Vec<Address> = Vec::new(&env);
+        assets.push_back(sxlm_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::SupportedAssets, &assets);
+
         extend_instance(&env);
     }
 
@@ -197,128 +258,201 @@ impl LendingContract {
     }
 
     // ==========================================================
-    // Admin setters (for governance)
+    // Admin: asset configuration
     // ==========================================================
 
-    /// Update the sXLM → XLM exchange rate. Only callable by admin.
+    /// Add or update a collateral asset's configuration. Only callable by admin.
+    /// If the asset is new it will be appended to the supported assets list.
+    pub fn set_asset_config(
+        env: Env,
+        asset: Address,
+        collateral_factor_bps: u32,
+        liquidation_threshold_bps: u32,
+        price_in_xlm: i128,
+    ) {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        assert!(
+            collateral_factor_bps > 0 && collateral_factor_bps <= 10_000,
+            "invalid collateral factor"
+        );
+        assert!(
+            liquidation_threshold_bps >= collateral_factor_bps
+                && liquidation_threshold_bps <= 10_000,
+            "liquidation threshold must be >= collateral factor"
+        );
+        assert!(price_in_xlm > 0, "price must be positive");
+        extend_instance(&env);
+
+        let config = AssetConfig {
+            collateral_factor_bps: collateral_factor_bps as i128,
+            liquidation_threshold_bps: liquidation_threshold_bps as i128,
+            price_in_xlm,
+            enabled: true,
+        };
+        write_asset_config(&env, &asset, &config);
+
+        // Add to supported list if not already present.
+        let mut assets = read_supported_assets(&env);
+        let mut found = false;
+        for a in assets.iter() {
+            if a == asset {
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            assets.push_back(asset.clone());
+            env.storage()
+                .instance()
+                .set(&DataKey::SupportedAssets, &assets);
+        }
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("asset_cfg"),), (asset, price_in_xlm));
+    }
+
+    /// Update the price of a supported asset. Only callable by admin.
+    pub fn update_asset_price(env: Env, asset: Address, price_in_xlm: i128) {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        assert!(price_in_xlm > 0, "price must be positive");
+        extend_instance(&env);
+
+        let mut config = read_asset_config(&env, &asset);
+        config.price_in_xlm = price_in_xlm;
+        write_asset_config(&env, &asset, &config);
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("price_upd"),), (asset, price_in_xlm));
+    }
+
+    // ==========================================================
+    // Admin setters (for governance / backward compat)
+    // ==========================================================
+
     pub fn update_exchange_rate(env: Env, rate: i128) {
         let admin = read_admin(&env);
         admin.require_auth();
         assert!(rate > 0, "rate must be positive");
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::ExchangeRate, &rate);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("er_upd"),),
-            rate,
-        );
+        let sxlm = read_sxlm_token(&env);
+        let mut config = read_asset_config(&env, &sxlm);
+        config.price_in_xlm = rate;
+        write_asset_config(&env, &sxlm, &config);
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("er_upd"),), rate);
     }
 
-    /// Update the collateral factor. Only callable by admin.
     pub fn update_collateral_factor(env: Env, new_cf_bps: u32) {
         let admin = read_admin(&env);
         admin.require_auth();
-        assert!(new_cf_bps > 0 && new_cf_bps <= 10000, "invalid collateral factor");
-        extend_instance(&env);
-        env.storage().instance().set(&DataKey::CollateralFactorBps, &(new_cf_bps as i128));
-
-        env.events().publish(
-            (soroban_sdk::symbol_short!("cf_upd"),),
-            new_cf_bps,
+        assert!(
+            new_cf_bps > 0 && new_cf_bps <= 10_000,
+            "invalid collateral factor"
         );
+        extend_instance(&env);
+
+        let sxlm = read_sxlm_token(&env);
+        let mut config = read_asset_config(&env, &sxlm);
+        config.collateral_factor_bps = new_cf_bps as i128;
+        write_asset_config(&env, &sxlm, &config);
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("cf_upd"),), new_cf_bps);
     }
 
-    /// Update the liquidation threshold. Only callable by admin.
     pub fn update_liquidation_threshold(env: Env, new_lt_bps: u32) {
         let admin = read_admin(&env);
         admin.require_auth();
-        assert!(new_lt_bps > 0 && new_lt_bps <= 10000, "invalid liquidation threshold");
+        assert!(
+            new_lt_bps > 0 && new_lt_bps <= 10_000,
+            "invalid liquidation threshold"
+        );
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::LiquidationThresholdBps, &(new_lt_bps as i128));
+
+        let sxlm = read_sxlm_token(&env);
+        let mut config = read_asset_config(&env, &sxlm);
+        config.liquidation_threshold_bps = new_lt_bps as i128;
+        write_asset_config(&env, &sxlm, &config);
     }
 
-    /// Update the borrow rate. Only callable by admin.
     pub fn update_borrow_rate(env: Env, new_rate_bps: u32) {
         let admin = read_admin(&env);
         admin.require_auth();
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::BorrowRateBps, &(new_rate_bps as i128));
+        env.storage()
+            .instance()
+            .set(&DataKey::BorrowRateBps, &(new_rate_bps as i128));
     }
 
     // ==========================================================
     // Core lending functions
     // ==========================================================
 
-    /// Deposit sXLM as collateral.
-    pub fn deposit_collateral(env: Env, user: Address, sxlm_amount: i128) {
+    pub fn deposit_collateral(env: Env, user: Address, asset: Address, amount: i128) {
         user.require_auth();
-        assert!(sxlm_amount > 0, "amount must be positive");
+        assert!(amount > 0, "amount must be positive");
         extend_instance(&env);
 
-        let sxlm = read_sxlm_token(&env);
-        let sxlm_client = token::Client::new(&env, &sxlm);
-        sxlm_client.transfer(&user, &env.current_contract_address(), &sxlm_amount);
+        let config = read_asset_config(&env, &asset);
+        assert!(config.enabled, "asset is not enabled for collateral");
 
-        let current = read_user_collateral(&env, &user);
-        write_user_collateral(&env, &user, current + sxlm_amount);
+        // Transfer asset from user to contract.
+        let asset_client = token::Client::new(&env, &asset);
+        asset_client.transfer(&user, &env.current_contract_address(), &amount);
 
+        // Update user's per-asset balance.
+        let current = read_user_asset_collateral(&env, &user, &asset);
+        write_user_asset_collateral(&env, &user, &asset, current + amount);
+
+        // Update global TotalCollateral (XLM-equivalent value).
+        let xlm_value = amount * config.price_in_xlm / RATE_PRECISION;
         let total = read_i128(&env, &DataKey::TotalCollateral);
-        write_i128(&env, &DataKey::TotalCollateral, total + sxlm_amount);
+        write_i128(&env, &DataKey::TotalCollateral, total + xlm_value);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("deposit"),),
-            (user, sxlm_amount),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("deposit"),), (user, asset, amount));
     }
 
-    /// Withdraw sXLM collateral if health factor stays above 1.0.
-    pub fn withdraw_collateral(env: Env, user: Address, sxlm_amount: i128) {
+    pub fn withdraw_collateral(env: Env, user: Address, asset: Address, amount: i128) {
         user.require_auth();
-        assert!(sxlm_amount > 0, "amount must be positive");
+        assert!(amount > 0, "amount must be positive");
         extend_instance(&env);
 
-        let current = read_user_collateral(&env, &user);
-        assert!(current >= sxlm_amount, "insufficient collateral");
+        let current = read_user_asset_collateral(&env, &user, &asset);
+        assert!(current >= amount, "insufficient collateral");
 
-        let new_collateral = current - sxlm_amount;
+        // Simulate withdrawal and check health.
+        write_user_asset_collateral(&env, &user, &asset, current - amount);
         let borrowed = read_user_borrowed(&env, &user);
-        let cf_bps = read_collateral_factor(&env);
-        let er = read_exchange_rate(&env);
-
         if borrowed > 0 {
-            let hf = compute_health_factor(new_collateral, borrowed, cf_bps, er);
+            let hf = compute_health_factor_multi(&env, &user, borrowed);
             assert!(hf >= RATE_PRECISION, "withdrawal would make position unhealthy");
         }
 
-        write_user_collateral(&env, &user, new_collateral);
-
+        let config = read_asset_config(&env, &asset);
+        let xlm_value = amount * config.price_in_xlm / RATE_PRECISION;
         let total = read_i128(&env, &DataKey::TotalCollateral);
-        write_i128(&env, &DataKey::TotalCollateral, total - sxlm_amount);
+        write_i128(&env, &DataKey::TotalCollateral, total - xlm_value);
 
-        let sxlm = read_sxlm_token(&env);
-        let sxlm_client = token::Client::new(&env, &sxlm);
-        sxlm_client.transfer(&env.current_contract_address(), &user, &sxlm_amount);
+        let asset_client = token::Client::new(&env, &asset);
+        asset_client.transfer(&env.current_contract_address(), &user, &amount);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("withdraw"),),
-            (user, sxlm_amount),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("withdraw"),), (user, asset, amount));
     }
 
-    /// Borrow XLM against deposited sXLM collateral.
     pub fn borrow(env: Env, user: Address, xlm_amount: i128) {
         user.require_auth();
         assert!(xlm_amount > 0, "amount must be positive");
         extend_instance(&env);
 
-        let collateral = read_user_collateral(&env, &user);
         let current_borrowed = read_user_borrowed(&env, &user);
         let new_borrowed = current_borrowed + xlm_amount;
-        let cf_bps = read_collateral_factor(&env);
-        let er = read_exchange_rate(&env);
-
-        // max_borrow = collateral * exchange_rate * cf_bps / (BPS_DENOMINATOR * RATE_PRECISION)
-        let max_borrow = collateral * er * cf_bps / (BPS_DENOMINATOR * RATE_PRECISION);
+        let max_borrow = compute_max_borrow(&env, &user);
         assert!(new_borrowed <= max_borrow, "borrow exceeds collateral limit");
 
         write_user_borrowed(&env, &user, new_borrowed);
@@ -329,19 +463,15 @@ impl LendingContract {
         let native = read_native_token(&env);
         let native_client = token::Client::new(&env, &native);
 
-        // Solvency check: ensure the pool has enough XLM to lend
         let pool_balance = native_client.balance(&env.current_contract_address());
         assert!(pool_balance >= xlm_amount, "insufficient pool liquidity");
 
         native_client.transfer(&env.current_contract_address(), &user, &xlm_amount);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("borrow"),),
-            (user, xlm_amount),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("borrow"),), (user, xlm_amount));
     }
 
-    /// Repay borrowed XLM.
     pub fn repay(env: Env, user: Address, xlm_amount: i128) {
         user.require_auth();
         assert!(xlm_amount > 0, "amount must be positive");
@@ -359,85 +489,116 @@ impl LendingContract {
         let total = read_i128(&env, &DataKey::TotalBorrowed);
         write_i128(&env, &DataKey::TotalBorrowed, total - repay_amount);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("repay"),),
-            (user, repay_amount),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("repay"),), (user, repay_amount));
     }
 
-    /// Liquidate an unhealthy position. Liquidator repays debt and receives collateral + bonus.
-    pub fn liquidate(env: Env, liquidator: Address, borrower: Address) {
+    pub fn liquidate(
+        env: Env,
+        liquidator: Address,
+        borrower: Address,
+        collateral_asset: Address,
+    ) {
         liquidator.require_auth();
         extend_instance(&env);
 
-        let collateral = read_user_collateral(&env, &borrower);
         let borrowed = read_user_borrowed(&env, &borrower);
         assert!(borrowed > 0, "no debt to liquidate");
 
-        let liq_threshold_bps = read_liquidation_threshold(&env);
-        let er = read_exchange_rate(&env);
-        let hf = compute_health_factor(collateral, borrowed, liq_threshold_bps, er);
+        let hf = compute_health_factor_multi(&env, &borrower, borrowed);
         assert!(hf < RATE_PRECISION, "position is healthy, cannot liquidate");
 
-        // Liquidator repays full debt
+        let borrower_asset_collateral =
+            read_user_asset_collateral(&env, &borrower, &collateral_asset);
+        assert!(
+            borrower_asset_collateral > 0,
+            "borrower has no collateral in this asset"
+        );
+
+        // Liquidator repays full XLM debt.
         let native = read_native_token(&env);
         let native_client = token::Client::new(&env, &native);
         native_client.transfer(&liquidator, &env.current_contract_address(), &borrowed);
 
-        // Liquidator receives sXLM worth (debt + 5% bonus) in XLM value
-        // sxlm_to_seize = borrowed * (1 + bonus_bps/BPS) * RATE_PRECISION / exchange_rate
+        // Calculate how much collateral to seize:
+        // asset_to_seize = (debt * (1 + bonus)) / price_in_xlm
         let bonus_bps = read_liquidation_bonus(&env);
         let debt_with_bonus = borrowed * (BPS_DENOMINATOR + bonus_bps) / BPS_DENOMINATOR;
-        let sxlm_to_seize = debt_with_bonus * RATE_PRECISION / er;
-        // Cap at borrower's actual collateral (can't seize more than they deposited)
-        let collateral_to_send = if sxlm_to_seize > collateral {
-            collateral
+        let asset_config = read_asset_config(&env, &collateral_asset);
+        let asset_to_seize = debt_with_bonus * RATE_PRECISION / asset_config.price_in_xlm;
+        let collateral_to_send = if asset_to_seize > borrower_asset_collateral {
+            borrower_asset_collateral
         } else {
-            sxlm_to_seize
+            asset_to_seize
         };
 
-        let sxlm = read_sxlm_token(&env);
-        let sxlm_client = token::Client::new(&env, &sxlm);
-        sxlm_client.transfer(&env.current_contract_address(), &liquidator, &collateral_to_send);
+        // Transfer seized collateral to liquidator.
+        let asset_client = token::Client::new(&env, &collateral_asset);
+        asset_client.transfer(
+            &env.current_contract_address(),
+            &liquidator,
+            &collateral_to_send,
+        );
 
-        // Clear borrower position
-        let remaining_collateral = collateral - collateral_to_send;
+        // Update borrower state.
+        let remaining = borrower_asset_collateral - collateral_to_send;
+        write_user_asset_collateral(&env, &borrower, &collateral_asset, remaining);
+        write_user_borrowed(&env, &borrower, 0);
+
+        // Update global totals.
+        let seized_xlm_value = collateral_to_send * asset_config.price_in_xlm / RATE_PRECISION;
         let total_collateral = read_i128(&env, &DataKey::TotalCollateral);
-        // Only subtract the seized amount; remaining_collateral stays in contract attributed to borrower
-        write_i128(&env, &DataKey::TotalCollateral, total_collateral - collateral_to_send);
+        write_i128(
+            &env,
+            &DataKey::TotalCollateral,
+            total_collateral - seized_xlm_value,
+        );
         let total_borrowed = read_i128(&env, &DataKey::TotalBorrowed);
         write_i128(&env, &DataKey::TotalBorrowed, total_borrowed - borrowed);
 
-        write_user_collateral(&env, &borrower, remaining_collateral);
-        write_user_borrowed(&env, &borrower, 0);
-
         env.events().publish(
             (soroban_sdk::symbol_short!("liq"),),
-            (liquidator, borrower, borrowed, collateral_to_send),
+            (liquidator, borrower, borrowed, collateral_to_send, collateral_asset),
         );
     }
 
-    // --- Views ---
+    // ==========================================================
+    // Views
+    // ==========================================================
 
-    /// Returns (collateral, borrowed) for a user.
     pub fn get_position(env: Env, user: Address) -> (i128, i128) {
         extend_instance(&env);
-        extend_user_data(&env, &user);
-        (
-            read_user_collateral(&env, &user),
-            read_user_borrowed(&env, &user),
-        )
+        let borrowed = read_user_borrowed(&env, &user);
+        let collateral_value = compute_total_collateral_value(&env, &user);
+        (collateral_value, borrowed)
     }
 
-    /// Returns health factor scaled by RATE_PRECISION (1e7 = 1.0).
-    /// Uses liquidation threshold (not collateral factor) to match what liquidate() checks.
+    pub fn get_asset_position(env: Env, user: Address, asset: Address) -> i128 {
+        extend_instance(&env);
+        read_user_asset_collateral(&env, &user, &asset)
+    }
+
+    pub fn get_user_max_borrow(env: Env, user: Address) -> i128 {
+        extend_instance(&env);
+        let max = compute_max_borrow(&env, &user);
+        let borrowed = read_user_borrowed(&env, &user);
+        if max > borrowed { max - borrowed } else { 0 }
+    }
+
     pub fn health_factor(env: Env, user: Address) -> i128 {
         extend_instance(&env);
-        let collateral = read_user_collateral(&env, &user);
         let borrowed = read_user_borrowed(&env, &user);
-        let lt_bps = read_liquidation_threshold(&env);
-        let er = read_exchange_rate(&env);
-        compute_health_factor(collateral, borrowed, lt_bps, er)
+        compute_health_factor_multi(&env, &user, borrowed)
+    }
+
+    pub fn get_asset_config(env: Env, asset: Address) -> AssetConfig {
+        extend_instance(&env);
+        read_asset_config(&env, &asset)
+    }
+
+    pub fn get_supported_assets(env: Env) -> Vec<Address> {
+        extend_instance(&env);
+        read_supported_assets(&env)
     }
 
     pub fn total_borrowed(env: Env) -> i128 {
@@ -452,17 +613,20 @@ impl LendingContract {
 
     pub fn get_exchange_rate(env: Env) -> i128 {
         extend_instance(&env);
-        read_exchange_rate(&env)
+        let sxlm = read_sxlm_token(&env);
+        read_asset_config(&env, &sxlm).price_in_xlm
     }
 
     pub fn get_collateral_factor(env: Env) -> i128 {
         extend_instance(&env);
-        read_collateral_factor(&env)
+        let sxlm = read_sxlm_token(&env);
+        read_asset_config(&env, &sxlm).collateral_factor_bps
     }
 
     pub fn get_liquidation_threshold(env: Env) -> i128 {
         extend_instance(&env);
-        read_liquidation_threshold(&env)
+        let sxlm = read_sxlm_token(&env);
+        read_asset_config(&env, &sxlm).liquidation_threshold_bps
     }
 
     pub fn get_borrow_rate(env: Env) -> i128 {
@@ -483,13 +647,27 @@ impl LendingContract {
     }
 }
 
+// ==========================================================
+// Tests
+// ==========================================================
+
 #[cfg(test)]
 mod test {
     use super::*;
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{token::StellarAssetClient, Env};
 
-    fn setup_test() -> (Env, Address, Address, Address, Address, Address, Address) {
+    /// Returns (env, contract_id, sxlm_id, native_id, usdc_id, user, liquidator, admin)
+    fn setup_test() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        Address,
+        Address,
+        Address,
+        Address,
+    ) {
         let env = Env::default();
         env.mock_all_auths();
 
@@ -497,49 +675,59 @@ mod test {
         let user = Address::generate(&env);
         let liquidator = Address::generate(&env);
 
-        let sxlm_token_admin = Address::generate(&env);
-        let sxlm_id = env.register_stellar_asset_contract_v2(sxlm_token_admin.clone()).address();
-        let native_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let usdc_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
 
         let contract_id = env.register_contract(None, LendingContract);
-
-        // Initialize
         let client = LendingContractClient::new(&env, &contract_id);
         client.initialize(&admin, &sxlm_id, &native_id, &7000, &8000, &500);
 
-        // Mint tokens
-        let sxlm_admin_client = StellarAssetClient::new(&env, &sxlm_id);
-        sxlm_admin_client.mint(&user, &100_000_0000000); // 100k sXLM
-        sxlm_admin_client.mint(&liquidator, &50_000_0000000);
+        // Mint sXLM to user and liquidator.
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &sxlm_id).mint(&liquidator, &50_000_0000000);
 
-        let native_admin_client = StellarAssetClient::new(&env, &native_id);
-        native_admin_client.mint(&contract_id, &500_000_0000000); // Fund pool with XLM
-        native_admin_client.mint(&liquidator, &100_000_0000000);
+        // Mint USDC to user (simulate 9 decimal precision → adjust below; using 7 decimals).
+        StellarAssetClient::new(&env, &usdc_id).mint(&user, &100_000_0000000);
 
-        (env, contract_id, sxlm_id, native_id, user, liquidator, admin)
+        // Fund pool with XLM.
+        StellarAssetClient::new(&env, &native_id).mint(&contract_id, &500_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&liquidator, &100_000_0000000);
+
+        (env, contract_id, sxlm_id, native_id, usdc_id, user, liquidator, admin)
     }
 
     #[test]
     fn test_initialize() {
-        let (env, contract_id, _, _, _, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, _, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
         assert_eq!(client.total_borrowed(), 0);
         assert_eq!(client.total_collateral(), 0);
         assert_eq!(client.get_exchange_rate(), RATE_PRECISION);
+        // sXLM should be in supported assets.
+        let assets = client.get_supported_assets();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets.get(0).unwrap(), sxlm_id);
     }
 
     #[test]
     fn test_deposit_and_borrow() {
-        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
-        // Deposit 1000 sXLM
-        client.deposit_collateral(&user, &10_000_000_000);
+        // Deposit 1000 sXLM.
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
         let (col, bor) = client.get_position(&user);
-        assert_eq!(col, 10_000_000_000);
+        assert_eq!(col, 10_000_000_000); // XLM value = sXLM amount at 1:1
         assert_eq!(bor, 0);
 
-        // Borrow 700 XLM (70% of 1000 at 1:1 ER)
+        // Borrow 700 XLM (70% CF).
         client.borrow(&user, &7_000_000_000);
         let (col2, bor2) = client.get_position(&user);
         assert_eq!(col2, 10_000_000_000);
@@ -549,40 +737,36 @@ mod test {
     #[test]
     #[should_panic(expected = "borrow exceeds collateral limit")]
     fn test_borrow_exceeds_limit() {
-        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
-        client.deposit_collateral(&user, &10_000_000_000);
-        // Try to borrow 8000 XLM (80% > 70% CF)
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+        // 80% > 70% CF → should panic.
         client.borrow(&user, &8_000_000_000);
     }
 
     #[test]
     fn test_repay() {
-        let (env, contract_id, _, native_id, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, native_id, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
-        // Give user XLM for repayment
-        let native_admin = StellarAssetClient::new(&env, &native_id);
-        native_admin.mint(&user, &100_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&user, &100_000_0000000);
 
-        client.deposit_collateral(&user, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
         client.borrow(&user, &5_000_000_000);
-
-        // Repay 3000
         client.repay(&user, &3_000_000_000);
+
         let (_, bor) = client.get_position(&user);
         assert_eq!(bor, 2_000_000_000);
     }
 
     #[test]
     fn test_withdraw_collateral() {
-        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
-        client.deposit_collateral(&user, &10_000_000_000);
-        // No borrows, can withdraw all
-        client.withdraw_collateral(&user, &5_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+        client.withdraw_collateral(&user, &sxlm_id, &5_000_000_000);
         let (col, _) = client.get_position(&user);
         assert_eq!(col, 5_000_000_000);
     }
@@ -590,101 +774,138 @@ mod test {
     #[test]
     #[should_panic(expected = "withdrawal would make position unhealthy")]
     fn test_withdraw_unhealthy() {
-        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
-        client.deposit_collateral(&user, &10_000_000_000);
-        client.borrow(&user, &7_000_000_000); // max borrow at 70%
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+        client.borrow(&user, &7_000_000_000); // max borrow at CF=70%
 
-        // Try to withdraw any collateral — should fail
-        client.withdraw_collateral(&user, &1_000_000_000);
+        // With LT=80%, health after withdrawing 2000 sXLM:
+        // weighted = 8000 * 0.8 = 6400 XLM → HF = 6400/7000 ≈ 0.914 < 1.0 → should panic.
+        client.withdraw_collateral(&user, &sxlm_id, &2_000_000_000);
     }
 
     #[test]
     fn test_health_factor() {
-        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
-        client.deposit_collateral(&user, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
         client.borrow(&user, &5_000_000_000);
 
-        // HF now uses liquidation_threshold (8000) not collateral_factor (7000)
-        // HF = (10000 * 1e7 * 8000 / 10000) / 5000 = 8000 * 1e7 / 5000 = 16_000_000
+        // HF = (10000 * price * LT / (RATE_PRECISION * BPS)) * RATE_PRECISION / 5000
+        //    = (10000 * 1e7 * 8000 / (1e7 * 10000)) * 1e7 / 5000
+        //    = 8000 * 1e7 / 5000 = 16_000_000
         let hf = client.health_factor(&user);
         assert_eq!(hf, 16_000_000); // 1.6 × 1e7
     }
 
     #[test]
     fn test_health_factor_with_exchange_rate() {
-        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
-        client.deposit_collateral(&user, &10_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
         client.borrow(&user, &5_000_000_000);
 
-        // Increase ER to 1.2 (12_000_000)
+        // Increase sXLM price to 1.2 (12_000_000).
         client.update_exchange_rate(&12_000_000);
 
-        // HF now uses LT (8000) not CF (7000)
-        // HF = (10000 * 12_000_000 * 8000 / 10000) / 5000
-        //    = 9600 * 1e7 / 5000 = 19_200_000
+        // HF = (10000 * 12_000_000 * 8000 / (1e7 * 10000)) * 1e7 / 5000
+        //    = (10000 * 1.2 * 0.8) * 1e7 / 5000 = 9600 * 1e7 / 5000 = 19_200_000
         let hf = client.health_factor(&user);
-        assert_eq!(hf, 19_200_000); // 1.92 × 1e7
+        assert_eq!(hf, 19_200_000);
     }
 
     #[test]
     fn test_exchange_rate_increases_borrow_capacity() {
-        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
-        client.deposit_collateral(&user, &10_000_000_000); // 1000 sXLM
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000); // 1000 sXLM
 
-        // At 1:1 ER, max borrow = 1000 * 0.7 = 700 XLM
+        // At 1:1, max_borrow = 1000 * 0.7 = 700.
         client.borrow(&user, &7_000_000_000);
 
-        // Increase ER to 1.5 → max borrow = 1000 * 1.5 * 0.7 = 1050 XLM
+        // Increase price to 1.5 → max_borrow = 1000 * 1.5 * 0.7 = 1050.
         client.update_exchange_rate(&15_000_000);
-
-        // Can now borrow more (up to 1050 - 700 = 350 more)
         client.borrow(&user, &3_000_000_000); // borrow 300 more
+
         let (_, bor) = client.get_position(&user);
-        assert_eq!(bor, 10_000_000_000); // 700 + 300 = 1000 total
+        assert_eq!(bor, 10_000_000_000);
     }
 
     #[test]
     fn test_liquidation() {
-        let (env, _contract_id, _sxlm_id, _, _, _, _) = setup_test();
+        let env = Env::default();
+        env.mock_all_auths();
 
-        // Create a separate contract with low liquidation threshold for testing
+        let admin = Address::generate(&env);
         let contract2 = env.register_contract(None, LendingContract);
         let client2 = LendingContractClient::new(&env, &contract2);
-        let sxlm2 = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
-        let native2 = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
-        client2.initialize(&Address::generate(&env), &sxlm2, &native2, &7000, &5000, &500);
+        let sxlm2 = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let native2 = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+
+        // Initialize with low liquidation threshold (5000) to make position liquidatable.
+        client2.initialize(&admin, &sxlm2, &native2, &7000, &5000, &500);
 
         let u = Address::generate(&env);
         let liq = Address::generate(&env);
         StellarAssetClient::new(&env, &sxlm2).mint(&u, &100_000_0000000);
-        StellarAssetClient::new(&env, &sxlm2).mint(&contract2, &100_000_0000000); // extra for bonus
+        StellarAssetClient::new(&env, &sxlm2).mint(&contract2, &100_000_0000000); // for bonus
         StellarAssetClient::new(&env, &native2).mint(&contract2, &500_000_0000000);
         StellarAssetClient::new(&env, &native2).mint(&liq, &100_000_0000000);
 
-        client2.deposit_collateral(&u, &10_000_000_000);
+        client2.deposit_collateral(&u, &sxlm2, &10_000_000_000);
         client2.borrow(&u, &7_000_000_000);
-        // HF = 10000 * 1e7 * 5000/10000 / 7000 = 5000 * 1e7 / 7000 ≈ 7_142_857 < 1e7
-        // Liquidatable!
 
-        client2.liquidate(&liq, &u);
+        // HF = (10000 * 1e7 * 5000 / (1e7 * 10000)) * 1e7 / 7000
+        //    = 5000 * 1e7 / 7000 ≈ 7_142_857 < RATE_PRECISION → liquidatable.
+        client2.liquidate(&liq, &u, &sxlm2);
+
         let (col, bor) = client2.get_position(&u);
         assert_eq!(bor, 0);
-        // Liquidator gets debt_with_bonus in sXLM: 7000 * 1.05 = 7350 (in units: 7_350_000_000)
-        // Remaining collateral: 10_000_000_000 - 7_350_000_000 = 2_650_000_000
+        // Seized: 7000 * 1.05 = 7350 sXLM → remaining = 10000 - 7350 = 2650 (in XLM value at 1:1).
         assert_eq!(col, 2_650_000_000);
     }
 
     #[test]
+    fn test_multi_asset_collateral() {
+        let (env, contract_id, sxlm_id, _, usdc_id, user, _, admin) = setup_test();
+        let client = LendingContractClient::new(&env, &contract_id);
+
+        // Register USDC: CF=90%, LT=92%, price=8.33 XLM (1 USDC ≈ 8.33 XLM at ~$0.12/XLM).
+        // price_in_xlm = 83_333_333 (8.3333 * RATE_PRECISION)
+        client.set_asset_config(&usdc_id, &9000, &9200, &83_333_333);
+
+        // Deposit 100 sXLM + 10 USDC.
+        client.deposit_collateral(&user, &sxlm_id, &1_000_000_000); // 100 sXLM
+        client.deposit_collateral(&user, &usdc_id, &100_000_000); // 10 USDC
+
+        // sXLM value = 100 * 1e7 / 1e7 = 100 XLM
+        // USDC value = 10 * 83_333_333 / 1e7 ≈ 83.333 XLM
+        // total ≈ 183.333 XLM
+        let (col, _) = client.get_position(&user);
+        assert!(col > 1_800_000_000, "collateral value should exceed 180 XLM");
+
+        // max_borrow_sxlm = 100 * 0.7 = 70 XLM
+        // max_borrow_usdc = 83.333 * 0.9 = 75 XLM
+        // total max_borrow ≈ 145 XLM
+        let max_borrow = client.get_user_max_borrow(&user);
+        assert!(max_borrow > 1_400_000_000, "max borrow should exceed 140 XLM");
+
+        // Also confirm per-asset queries.
+        assert_eq!(client.get_asset_position(&user, &sxlm_id), 1_000_000_000);
+        assert_eq!(client.get_asset_position(&user, &usdc_id), 100_000_000);
+    }
+
+    #[test]
     fn test_admin_update_collateral_factor() {
-        let (env, contract_id, _, _, _, _, _) = setup_test();
+        let (env, contract_id, _, _, _, _, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
         assert_eq!(client.get_collateral_factor(), 7000);
@@ -694,15 +915,16 @@ mod test {
 
     #[test]
     fn test_totals() {
-        let (env, contract_id, sxlm_id, _, user, _, _) = setup_test();
+        let (env, contract_id, sxlm_id, _, _, user, _, _) = setup_test();
         let client = LendingContractClient::new(&env, &contract_id);
 
         let user2 = Address::generate(&env);
         StellarAssetClient::new(&env, &sxlm_id).mint(&user2, &100_000_0000000);
 
-        client.deposit_collateral(&user, &10_000_000_000);
-        client.deposit_collateral(&user2, &5_000_000_000);
+        client.deposit_collateral(&user, &sxlm_id, &10_000_000_000);
+        client.deposit_collateral(&user2, &sxlm_id, &5_000_000_000);
 
+        // At 1:1 price, XLM value = sXLM amount.
         assert_eq!(client.total_collateral(), 15_000_000_000);
 
         client.borrow(&user, &3_000_000_000);
