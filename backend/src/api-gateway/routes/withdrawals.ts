@@ -1,10 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import { UserService } from "../../user-service/index.js";
-
-const walletParamSchema = z.object({
-  wallet: z.string().min(56).max(56),
-});
+import { stellarAddressSchema } from "../middleware/validation.js";
 
 export const withdrawalRoutes: FastifyPluginAsync<{ userService: UserService }> = async (
   fastify,
@@ -18,7 +15,7 @@ export const withdrawalRoutes: FastifyPluginAsync<{ userService: UserService }> 
    */
   fastify.get("/staking/withdrawals/:wallet", async (request, reply) => {
     try {
-      const params = walletParamSchema.parse(request.params);
+      const params = z.object({ wallet: stellarAddressSchema }).parse(request.params);
       const withdrawals = await userService.getWithdrawalsByWallet(params.wallet);
 
       return {
@@ -45,8 +42,8 @@ export const withdrawalRoutes: FastifyPluginAsync<{ userService: UserService }> 
   fastify.post("/staking/withdrawals/mark-claimed", async (request, reply) => {
     try {
       const body = z.object({
-        wallet: z.string().min(56).max(56),
-        withdrawalId: z.string(),
+        wallet: stellarAddressSchema,
+        withdrawalId: z.string().min(1, "Withdrawal ID is required"),
       }).parse(request.body);
 
       await userService.markWithdrawalClaimed(body.wallet, Number(body.withdrawalId));
@@ -63,7 +60,7 @@ export const withdrawalRoutes: FastifyPluginAsync<{ userService: UserService }> 
   fastify.get("/withdrawals", async (request, reply) => {
     try {
       const query = z
-        .object({ wallet: z.string().min(56).max(56) })
+        .object({ wallet: stellarAddressSchema })
         .parse(request.query);
       const withdrawals = await userService.getWithdrawalsByWallet(query.wallet);
 

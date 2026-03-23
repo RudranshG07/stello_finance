@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from "fastify";
 import { PrismaClient } from "@prisma/client";
 import { StakingEngine } from "../../staking-engine/index.js";
+import { chartDaysSchema } from "../middleware/validation.js";
 
 export const statsRoutes: FastifyPluginAsync<{
   prisma: PrismaClient;
@@ -11,10 +12,11 @@ export const statsRoutes: FastifyPluginAsync<{
   /**
    * GET /chart-data
    * Returns historical time-series data for frontend charts.
+   * Query param `days` is clamped to 1–365.
    */
   fastify.get<{ Querystring: { days?: string } }>("/chart-data", async (request) => {
     try {
-      const days = parseInt(request.query.days || "90", 10);
+      const { days } = chartDaysSchema.parse(request.query);
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
       const snapshots = await prisma.rewardSnapshot.findMany({

@@ -1,5 +1,4 @@
 import { FastifyPluginAsync } from "fastify";
-import { z } from "zod";
 import {
   rpc,
   Contract,
@@ -10,11 +9,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { config } from "../../config/index.js";
 import { StakingEngine } from "../../staking-engine/index.js";
-
-const stakeSchema = z.object({
-  userAddress: z.string().min(56).max(56),
-  amount: z.number().positive(),
-});
+import { userAmountSchema } from "../middleware/validation.js";
 
 export const stakeRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine }> = async (
   fastify,
@@ -28,22 +23,22 @@ export const stakeRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine }> =
    * Builds an unsigned deposit transaction for the user to sign with Freighter.
    */
   fastify.post("/staking/stake", async (request, reply) => {
+    const body = userAmountSchema.parse(request.body);
+    const xlmStroops = BigInt(Math.floor(body.amount * 1e7));
+
+    // Validate bounds
+    if (xlmStroops < config.protocol.minStakeAmount) {
+      return reply.status(400).send({
+        error: `Minimum stake is ${Number(config.protocol.minStakeAmount) / 1e7} XLM`,
+      });
+    }
+    if (xlmStroops > config.protocol.maxStakeAmount) {
+      return reply.status(400).send({
+        error: `Maximum stake is ${Number(config.protocol.maxStakeAmount) / 1e7} XLM`,
+      });
+    }
+
     try {
-      const body = stakeSchema.parse(request.body);
-      const xlmStroops = BigInt(Math.floor(body.amount * 1e7));
-
-      // Validate bounds
-      if (xlmStroops < config.protocol.minStakeAmount) {
-        return reply.status(400).send({
-          error: `Minimum stake is ${Number(config.protocol.minStakeAmount) / 1e7} XLM`,
-        });
-      }
-      if (xlmStroops > config.protocol.maxStakeAmount) {
-        return reply.status(400).send({
-          error: `Maximum stake is ${Number(config.protocol.maxStakeAmount) / 1e7} XLM`,
-        });
-      }
-
       // Build unsigned transaction
       const contract = new Contract(config.contracts.stakingContractId);
       const depositOp = contract.call(

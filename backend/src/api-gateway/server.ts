@@ -6,6 +6,8 @@ import { StakingEngine } from "../staking-engine/index.js";
 import { RewardEngine } from "../reward-engine/index.js";
 import { UserService } from "../user-service/index.js";
 import { PrismaClient } from "@prisma/client";
+import { registerErrorHandling } from "./middleware/errorHandler.js";
+import { healthRoutes } from "./routes/health.js";
 import { stakeRoutes } from "./routes/stake.js";
 import { unstakeRoutes } from "./routes/unstake.js";
 import { submitRoutes } from "./routes/submit.js";
@@ -29,7 +31,11 @@ export interface GatewayDeps {
 }
 
 export async function startApiGateway(deps: GatewayDeps) {
-  const fastify = Fastify({ logger: true });
+  const fastify = Fastify({
+    logger: true,
+    // Limit request body size to 1 MB to prevent abuse
+    bodyLimit: 1_048_576,
+  });
 
   await fastify.register(cors, { origin: true });
   await fastify.register(rateLimit, {
@@ -41,14 +47,25 @@ export async function startApiGateway(deps: GatewayDeps) {
       request.ip,
   });
 
-  // Decorate request with wallet field for auth
+  // Decorate request with wallet and requestId fields for auth and tracing
   fastify.decorateRequest("wallet", "");
+  fastify.decorateRequest("requestId", "");
 
-  // Health check
+  // Register centralized error handling (request IDs, Zod formatting, 404s)
+  registerErrorHandling(fastify);
+
+  // Health check — simple endpoint for load balancers (backwards compatible)
   fastify.get("/health", async () => ({
     status: "ok",
     timestamp: new Date().toISOString(),
   }));
+
+  // Detailed health dashboard routes
+  await fastify.register(healthRoutes, {
+    prisma: deps.prisma,
+    stakingEngine: deps.stakingEngine,
+    rpcUrl: config.stellar.rpcUrl,
+  });
 
   // Auth routes (public)
   await fastify.register(authRoutes, { prefix: "/api" });

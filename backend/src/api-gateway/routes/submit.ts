@@ -11,13 +11,10 @@ import {
 } from "@stellar/stellar-sdk";
 import { config } from "../../config/index.js";
 import { StakingEngine } from "../../staking-engine/index.js";
-
-const submitSchema = z.object({
-  signedXdr: z.string().min(1),
-});
+import { stellarAddressSchema, signedXdrSchema } from "../middleware/validation.js";
 
 const claimSchema = z.object({
-  userAddress: z.string().min(56).max(56),
+  userAddress: stellarAddressSchema,
   withdrawalId: z.string(),
 });
 
@@ -87,7 +84,7 @@ export const submitRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine }> 
    */
   fastify.post("/staking/submit", async (request, reply) => {
     try {
-      const body = submitSchema.parse(request.body);
+      const body = signedXdrSchema.parse(request.body);
 
       // Send the signed XDR directly to Soroban RPC via JSON-RPC
       // This avoids TransactionBuilder.fromXDR parsing issues with Soroban envelopes

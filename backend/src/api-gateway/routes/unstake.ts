@@ -13,10 +13,11 @@ import {
 import { PrismaClient } from "@prisma/client";
 import { config } from "../../config/index.js";
 import { StakingEngine } from "../../staking-engine/index.js";
+import { stellarAddressSchema, positiveAmountSchema } from "../middleware/validation.js";
 
 const unstakeSchema = z.object({
-  userAddress: z.string().min(56).max(56),
-  amount: z.number().positive(),
+  userAddress: stellarAddressSchema,
+  amount: positiveAmountSchema,
   instant: z.boolean().optional().default(false),
 });
 
@@ -117,7 +118,7 @@ export const unstakeRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine; p
    */
   fastify.get("/balance/:address", async (request, reply) => {
     try {
-      const params = z.object({ address: z.string().min(56).max(56) }).parse(request.params);
+      const params = z.object({ address: stellarAddressSchema }).parse(request.params);
       const exchangeRate = await stakingEngine.getExchangeRate();
 
       try {
@@ -153,7 +154,7 @@ export const unstakeRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine; p
    */
   fastify.post("/staking/restore-balance", async (request, reply) => {
     try {
-      const body = z.object({ userAddress: z.string().min(56).max(56) }).parse(request.body);
+      const body = z.object({ userAddress: stellarAddressSchema }).parse(request.body);
       const xdr = await buildRestoreTx(server, body.userAddress);
       return { xdr, networkPassphrase: config.stellar.networkPassphrase };
     } catch (err: unknown) {
