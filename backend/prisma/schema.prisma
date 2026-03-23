@@ -74,13 +74,15 @@ model ProtocolMetrics {
 }
 
 model CollateralPosition {
-  id            Int      @id @default(autoincrement())
-  wallet        String
-  sxlmDeposited BigInt
-  xlmBorrowed   BigInt
-  healthFactor  Float
-  updatedAt     DateTime @default(now())
+  id              Int      @id @default(autoincrement())
+  wallet          String
+  collateralAsset String   @default("sXLM") // asset contract ID or symbol
+  amountDeposited BigInt
+  xlmBorrowed     BigInt
+  healthFactor    Float
+  updatedAt       DateTime @default(now())
 
+  @@unique([wallet, collateralAsset])
   @@index([wallet])
   @@map("collateral_positions")
 }
