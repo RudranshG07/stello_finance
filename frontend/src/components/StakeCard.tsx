@@ -11,15 +11,25 @@ export default function StakeCard() {
   const { stats, apy } = useProtocol();
   const [xlmAmount, setXlmAmount] = useState('');
 
+  // Bakiye kontrolü
+  const userBalance = balance?.xlmNativeBalance || 0;
+  const isInsufficient = parseFloat(xlmAmount) > userBalance;
+
   const sxlmReceive = xlmAmount
     ? (parseFloat(xlmAmount) / stats.exchangeRate).toFixed(4)
     : '0.0000';
 
   const handleStake = async () => {
-    if (!xlmAmount || parseFloat(xlmAmount) <= 0) return;
+    if (!xlmAmount || parseFloat(xlmAmount) <= 0 || isInsufficient) return;
     clearError();
     const success = await stake(parseFloat(xlmAmount));
     if (success) setXlmAmount('');
+  };
+
+  const handleMaxClick = () => {
+    // Stellar ağında işlem ücreti için bir miktar (örn: 1 XLM) bırakmak güvenlidir
+    const maxSafeAmount = Math.max(0, userBalance - 1); 
+    setXlmAmount(maxSafeAmount.toString());
   };
 
   return (
@@ -31,15 +41,28 @@ export default function StakeCard() {
         </span>
       </div>
 
-      <div>
-        <label className="label">You stake (XLM)</label>
+      <div className="space-y-2">
+        <div className="flex justify-between items-end">
+          <label className="label">You stake (XLM)</label>
+          {isConnected && (
+            <button 
+              onClick={handleMaxClick}
+              className="text-[10px] text-yellow-500 hover:text-yellow-400 font-bold uppercase tracking-wider"
+            >
+              Max: {userBalance.toFixed(2)}
+            </button>
+          )}
+        </div>
         <input
           type="number"
           value={xlmAmount}
           onChange={(e) => setXlmAmount(e.target.value)}
           placeholder="0.00"
-          className="input font-mono text-lg"
+          className={`input font-mono text-lg ${isInsufficient ? 'border-red-500 focus:border-red-500' : ''}`}
         />
+        {isInsufficient && (
+          <p className="text-[10px] text-red-400 mt-1">Insufficient XLM balance</p>
+        )}
       </div>
 
       <div className="flex items-center justify-center gap-3 text-neutral-700 text-xs">
@@ -63,18 +86,6 @@ export default function StakeCard() {
           <span>Exchange Rate</span>
           <span className="text-neutral-400">1 sXLM = {stats.exchangeRate.toFixed(4)} XLM</span>
         </div>
-        {isConnected && (
-          <div className="flex justify-between">
-            <span>Available XLM</span>
-            <span className="text-neutral-400">{balance.xlmNativeBalance.toFixed(4)} XLM</span>
-          </div>
-        )}
-        {isConnected && balance.sxlmBalance > 0 && (
-          <div className="flex justify-between">
-            <span>Your sXLM</span>
-            <span className="font-mono" style={{ color: '#F5CF00' }}>{balance.sxlmBalance.toFixed(4)} sXLM</span>
-          </div>
-        )}
         <div className="flex justify-between">
           <span>30d APY</span>
           <span className="text-neutral-400">{formatAPY(apy.apy30d)}</span>
@@ -102,28 +113,19 @@ export default function StakeCard() {
         <div className={isPending ? "banner-warning space-y-1" : "banner-success space-y-1"}>
           <p className={`text-xs ${isPending ? 'text-yellow-400' : 'text-green-400'}`}>
             {isPending
-              ? 'Transaction submitted — confirming on Stellar (may take a moment)'
-              : 'Staked successfully — sXLM minted to your wallet'}
+              ? 'Transaction submitted — confirming on Stellar'
+              : 'Staked successfully — sXLM minted'}
           </p>
-          <a
-            href={`https://stellar.expert/explorer/public/tx/${lastTxHash}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block text-[10px] font-mono truncate"
-            style={{ color: isPending ? '#F5CF00' : '#4ade80', opacity: 0.7 }}
-          >
-            {lastTxHash}
-          </a>
         </div>
       )}
 
       {isConnected ? (
         <button
           onClick={handleStake}
-          disabled={isStaking || !xlmAmount || parseFloat(xlmAmount) <= 0}
-          className="w-full btn"
+          disabled={isStaking || !xlmAmount || parseFloat(xlmAmount) <= 0 || isInsufficient}
+          className={`w-full btn ${isStaking ? 'opacity-70 cursor-not-allowed' : ''}`}
         >
-          {isStaking ? 'Processing...' : 'Stake XLM'}
+          {isStaking ? 'Processing...' : isInsufficient ? 'Insufficient Balance' : 'Stake XLM'}
         </button>
       ) : (
         <button onClick={connect} className="w-full btn">
