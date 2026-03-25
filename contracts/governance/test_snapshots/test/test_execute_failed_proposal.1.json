@@ -153,7 +153,7 @@
   ],
   "ledger": {
     "protocol_version": 21,
-    "sequence_number": 101,
+    "sequence_number": 151,
     "timestamp": 0,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
@@ -430,6 +430,14 @@
                       },
                       "val": {
                         "u32": 100
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "executable_ledger"
+                      },
+                      "val": {
+                        "u32": 150
                       }
                     },
                     {
@@ -712,6 +720,18 @@
                         },
                         "val": {
                           "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TimelockLedgers"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 50
                         }
                       },
                       {
@@ -1166,6 +1186,9 @@
                 },
                 {
                   "u32": 100
+                },
+                {
+                  "u32": 50
                 },
                 {
                   "u32": 1000
@@ -1848,7 +1871,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'proposal did not pass' from contract function 'Symbol(obj#495)'"
+                  "string": "caught panic 'proposal did not pass' from contract function 'Symbol(obj#525)'"
                 },
                 {
                   "u64": 0

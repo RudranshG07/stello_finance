@@ -186,7 +186,7 @@ stellar contract invoke \
 
 echo "  LP Pool contract initialized"
 
-# Governance: voting_period=17280 ledgers (~24h), quorum=1000bps (10%)
+# Governance: voting_period=17280 ledgers (~24h), timelock=17280 ledgers (~24h), quorum=1000bps (10%)
 stellar contract invoke \
   --id "$GOVERNANCE_CONTRACT_ID" \
   --source "$ACCOUNT" \
@@ -195,6 +195,7 @@ stellar contract invoke \
   --admin "$ADMIN_PUB_KEY" \
   --sxlm_token "$TOKEN_CONTRACT_ID" \
   --voting_period_ledgers 17280 \
+  --timelock_ledgers 17280 \
   --quorum_bps 1000
 
 echo "  Governance contract initialized"

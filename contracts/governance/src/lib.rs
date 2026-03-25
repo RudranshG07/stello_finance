@@ -7,9 +7,9 @@ const MIN_PROPOSAL_BALANCE: i128 = 100_0000000; // 100 sXLM minimum to create pr
 
 // ---------- TTL constants ----------
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400;        // bump to ~30 days
+const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
 const PROPOSAL_LIFETIME_THRESHOLD: u32 = 518_400; // ~30 days
-const PROPOSAL_BUMP_AMOUNT: u32 = 3_110_400;      // bump to ~180 days
+const PROPOSAL_BUMP_AMOUNT: u32 = 3_110_400; // bump to ~180 days
 
 #[derive(Clone)]
 #[contracttype]
@@ -17,6 +17,7 @@ pub enum DataKey {
     Admin,
     SxlmToken,
     VotingPeriodLedgers,
+    TimelockLedgers,
     QuorumBps,
     Initialized,
     ProposalCount,
@@ -39,6 +40,7 @@ pub struct Proposal {
     pub votes_against: i128,
     pub start_ledger: u32,
     pub end_ledger: u32,
+    pub executable_ledger: u32,
     pub executed: bool,
 }
 
@@ -53,18 +55,22 @@ fn extend_instance(env: &Env) {
 fn extend_proposal(env: &Env, id: u64) {
     let key = DataKey::Proposal(id);
     if env.storage().persistent().has(&key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PROPOSAL_LIFETIME_THRESHOLD,
+            PROPOSAL_BUMP_AMOUNT,
+        );
     }
 }
 
 fn extend_vote(env: &Env, proposal_id: u64, voter: &Address) {
     let key = DataKey::Vote(proposal_id, voter.clone());
     if env.storage().persistent().has(&key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PROPOSAL_LIFETIME_THRESHOLD,
+            PROPOSAL_BUMP_AMOUNT,
+        );
     }
 }
 
@@ -88,6 +94,13 @@ fn read_quorum_bps(env: &Env) -> i128 {
         .instance()
         .get(&DataKey::QuorumBps)
         .unwrap_or(1000) // 10%
+}
+
+fn read_timelock_ledgers(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TimelockLedgers)
+        .unwrap_or(17280u32) // ~24 hours
 }
 
 fn next_proposal_id(env: &Env) -> u64 {
@@ -124,9 +137,11 @@ fn has_voted(env: &Env, proposal_id: u64, voter: &Address) -> bool {
     let key = DataKey::Vote(proposal_id, voter.clone());
     let val: bool = env.storage().persistent().get(&key).unwrap_or(false);
     if val {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PROPOSAL_LIFETIME_THRESHOLD,
+            PROPOSAL_BUMP_AMOUNT,
+        );
     }
     val
 }
@@ -150,19 +165,35 @@ impl GovernanceContract {
         admin: Address,
         sxlm_token: Address,
         voting_period_ledgers: u32,
+        timelock_ledgers: u32,
         quorum_bps: u32,
     ) {
-        let already: bool = env.storage().instance().get(&DataKey::Initialized).unwrap_or(false);
+        let already: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Initialized)
+            .unwrap_or(false);
         if already {
             panic!("already initialized");
         }
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::SxlmToken, &sxlm_token);
-        env.storage().instance().set(&DataKey::VotingPeriodLedgers, &voting_period_ledgers);
-        env.storage().instance().set(&DataKey::QuorumBps, &(quorum_bps as i128));
+        env.storage()
+            .instance()
+            .set(&DataKey::SxlmToken, &sxlm_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::VotingPeriodLedgers, &voting_period_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::TimelockLedgers, &timelock_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::QuorumBps, &(quorum_bps as i128));
         // Default reference supply: 0 means quorum check uses absolute minimum
-        env.storage().instance().set(&DataKey::ReferenceSupply, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReferenceSupply, &0i128);
         extend_instance(&env);
     }
 
@@ -184,7 +215,19 @@ impl GovernanceContract {
         admin.require_auth();
         assert!(supply >= 0, "supply must be non-negative");
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::ReferenceSupply, &supply);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReferenceSupply, &supply);
+    }
+
+    /// Set the execution timelock in ledgers. Only callable by admin.
+    pub fn set_timelock_ledgers(env: Env, timelock_ledgers: u32) {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        extend_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::TimelockLedgers, &timelock_ledgers);
     }
 
     /// Create a new governance proposal. Proposer must hold minimum sXLM balance.
@@ -208,6 +251,7 @@ impl GovernanceContract {
         let id = next_proposal_id(&env);
         let current_ledger = env.ledger().sequence();
         let voting_period = read_voting_period(&env);
+        let timelock_ledgers = read_timelock_ledgers(&env);
 
         let proposal = Proposal {
             id,
@@ -218,6 +262,7 @@ impl GovernanceContract {
             votes_against: 0,
             start_ledger: current_ledger,
             end_ledger: current_ledger + voting_period,
+            executable_ledger: current_ledger + voting_period + timelock_ledgers,
             executed: false,
         };
 
@@ -247,10 +292,7 @@ impl GovernanceContract {
         );
 
         // Check not already voted
-        assert!(
-            !has_voted(&env, proposal_id, &voter),
-            "already voted"
-        );
+        assert!(!has_voted(&env, proposal_id, &voter), "already voted");
 
         // Get voter's sXLM balance as vote weight
         let sxlm = read_sxlm_token(&env);
@@ -287,13 +329,19 @@ impl GovernanceContract {
             current_ledger > proposal.end_ledger,
             "voting period not ended"
         );
+        assert!(
+            current_ledger >= proposal.executable_ledger,
+            "proposal timelock not elapsed"
+        );
 
         // Check quorum: total_votes must be >= reference_supply * quorum_bps / BPS_DENOMINATOR
         let total_votes = proposal.votes_for + proposal.votes_against;
         assert!(total_votes > 0, "no votes cast");
 
         let quorum_bps = read_quorum_bps(&env);
-        let reference_supply: i128 = env.storage().instance()
+        let reference_supply: i128 = env
+            .storage()
+            .instance()
             .get(&DataKey::ReferenceSupply)
             .unwrap_or(0);
 
@@ -310,13 +358,14 @@ impl GovernanceContract {
 
         // Store the approved parameter value on-chain
         let param_key = DataKey::Param(proposal.param_key.clone());
-        env.storage().persistent().set(
-            &param_key,
-            &proposal.new_value,
-        );
         env.storage()
             .persistent()
-            .extend_ttl(&param_key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+            .set(&param_key, &proposal.new_value);
+        env.storage().persistent().extend_ttl(
+            &param_key,
+            PROPOSAL_LIFETIME_THRESHOLD,
+            PROPOSAL_BUMP_AMOUNT,
+        );
 
         proposal.executed = true;
         write_proposal(&env, &proposal);
@@ -352,17 +401,25 @@ impl GovernanceContract {
     pub fn get_param(env: Env, key: String) -> String {
         extend_instance(&env);
         let param_key = DataKey::Param(key);
-        let val: String = env.storage()
+        let val: String = env
+            .storage()
             .persistent()
             .get(&param_key)
             .unwrap_or(String::from_str(&env, ""));
         // Extend TTL if it exists
         if env.storage().persistent().has(&param_key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&param_key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+            env.storage().persistent().extend_ttl(
+                &param_key,
+                PROPOSAL_LIFETIME_THRESHOLD,
+                PROPOSAL_BUMP_AMOUNT,
+            );
         }
         val
+    }
+
+    pub fn get_timelock_ledgers(env: Env) -> u32 {
+        extend_instance(&env);
+        read_timelock_ledgers(&env)
     }
 }
 
@@ -380,11 +437,13 @@ mod test {
         let proposer = Address::generate(&env);
         let voter = Address::generate(&env);
 
-        let sxlm_id = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
         let contract_id = env.register_contract(None, GovernanceContract);
 
         let client = GovernanceContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &sxlm_id, &100, &1000); // 100 ledgers voting, 10% quorum
+        client.initialize(&admin, &sxlm_id, &100, &50, &1000); // 100 ledgers voting, 50 ledgers timelock, 10% quorum
 
         // Mint sXLM to participants
         let sxlm_admin = StellarAssetClient::new(&env, &sxlm_id);
@@ -417,6 +476,7 @@ mod test {
         let p = client.get_proposal(&0);
         assert_eq!(p.votes_for, 0);
         assert_eq!(p.votes_against, 0);
+        assert_eq!(p.executable_ledger, p.end_ledger + 50);
         assert!(!p.executed);
     }
 
@@ -469,9 +529,9 @@ mod test {
         client.vote(&proposer, &0, &true);
         client.vote(&voter, &0, &true);
 
-        // Advance ledger past voting period
+        // Advance ledger past voting period + timelock
         env.ledger().with_mut(|li| {
-            li.sequence_number += 101;
+            li.sequence_number += 151;
         });
 
         client.execute_proposal(&0);
@@ -504,6 +564,28 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "proposal timelock not elapsed")]
+    fn test_execute_before_timelock_elapsed() {
+        let (env, contract_id, _, proposer, voter) = setup_test();
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "fee"),
+            &String::from_str(&env, "100"),
+        );
+
+        client.vote(&proposer, &0, &true);
+        client.vote(&voter, &0, &true);
+
+        env.ledger().with_mut(|li| {
+            li.sequence_number += 101;
+        });
+
+        client.execute_proposal(&0);
+    }
+
+    #[test]
     #[should_panic(expected = "proposal did not pass")]
     fn test_execute_failed_proposal() {
         let (env, contract_id, _, proposer, voter) = setup_test();
@@ -520,7 +602,7 @@ mod test {
         client.vote(&voter, &0, &true); // 5k for
 
         env.ledger().with_mut(|li| {
-            li.sequence_number += 101;
+            li.sequence_number += 151;
         });
 
         client.execute_proposal(&0); // should panic
@@ -552,5 +634,15 @@ mod test {
         // Non-existent param returns empty string
         let val = client.get_param(&String::from_str(&env, "nonexistent"));
         assert_eq!(val, String::from_str(&env, ""));
+    }
+
+    #[test]
+    fn test_set_timelock_ledgers() {
+        let (env, contract_id, _, _, _) = setup_test();
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        assert_eq!(client.get_timelock_ledgers(), 50);
+        client.set_timelock_ledgers(&75);
+        assert_eq!(client.get_timelock_ledgers(), 75);
     }
 }

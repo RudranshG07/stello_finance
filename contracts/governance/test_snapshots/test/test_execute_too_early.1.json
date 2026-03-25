@@ -434,6 +434,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "executable_ledger"
+                      },
+                      "val": {
+                        "u32": 150
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "executed"
                       },
                       "val": {
@@ -712,6 +720,18 @@
                         },
                         "val": {
                           "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TimelockLedgers"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 50
                         }
                       },
                       {
@@ -1166,6 +1186,9 @@
                 },
                 {
                   "u32": 100
+                },
+                {
+                  "u32": 50
                 },
                 {
                   "u32": 1000
@@ -1848,7 +1871,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'voting period not ended' from contract function 'Symbol(obj#495)'"
+                  "string": "caught panic 'voting period not ended' from contract function 'Symbol(obj#525)'"
                 },
                 {
                   "u64": 0

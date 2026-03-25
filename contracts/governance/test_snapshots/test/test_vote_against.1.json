@@ -376,6 +376,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "executable_ledger"
+                      },
+                      "val": {
+                        "u32": 150
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "executed"
                       },
                       "val": {
@@ -603,6 +611,18 @@
                         },
                         "val": {
                           "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TimelockLedgers"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 50
                         }
                       },
                       {
@@ -1057,6 +1077,9 @@
                 },
                 {
                   "u32": 100
+                },
+                {
+                  "u32": 50
                 },
                 {
                   "u32": 1000
