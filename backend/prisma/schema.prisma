@@ -8,30 +8,28 @@ datasource db {
 }
 
 model Validator {
-  id               Int       @id @default(autoincrement())
-  pubkey           String    @unique
+  id               Int                @id @default(autoincrement())
+  pubkey           String             @unique
   uptime           Float
   commission       Float
   votingPower      Float?
   performanceScore Float
   allocatedStake   BigInt
   lastChecked      DateTime
-
-  history ValidatorHistory[]
+  history          ValidatorHistory[]
 
   @@map("validators")
 }
 
 model ValidatorHistory {
-  id               Int      @id @default(autoincrement())
+  id               Int       @id @default(autoincrement())
   validatorId      Int
   uptime           Float
   commission       Float
   performanceScore Float
   allocatedStake   BigInt
-  timestamp        DateTime @default(now())
-
-  validator Validator @relation(fields: [validatorId], references: [id])
+  timestamp        DateTime  @default(now())
+  validator        Validator @relation(fields: [validatorId], references: [id])
 
   @@index([validatorId, timestamp])
   @@map("validator_history")
@@ -76,11 +74,11 @@ model ProtocolMetrics {
 model CollateralPosition {
   id                 Int      @id @default(autoincrement())
   wallet             String   @unique
-  collateralValueXlm BigInt   @default(0)
   xlmBorrowed        BigInt
   healthFactor       Float
-  maxBorrow          BigInt   @default(0)
   updatedAt          DateTime @default(now())
+  collateralValueXlm BigInt   @default(0)
+  maxBorrow          BigInt   @default(0)
 
   @@index([wallet])
   @@map("collateral_positions")
@@ -126,18 +124,17 @@ model GovernanceProposal {
 }
 
 model LiquidationEvent {
-  id             Int      @id @default(autoincrement())
-  txHash         String?
-  eventIndex     Int?
-  contractId     String?
+  id             Int                      @id @default(autoincrement())
   liquidator     String
   borrower       String
   debtRepaid     BigInt
   ledger         Int
+  createdAt      DateTime                 @default(now())
+  contractId     String?
+  eventIndex     Int?
   ledgerClosedAt DateTime?
-  createdAt      DateTime @default(now())
-
-  seizedAssets LiquidationSeizedAsset[]
+  txHash         String?
+  seizedAssets   LiquidationSeizedAsset[]
 
   @@unique([txHash, eventIndex])
   @@index([borrower])
@@ -152,18 +149,10 @@ model LiquidationSeizedAsset {
   liquidationEventId Int
   asset              String
   amount             BigInt
-
-  liquidationEvent LiquidationEvent @relation(fields: [liquidationEventId], references: [id], onDelete: Cascade)
+  liquidationEvent   LiquidationEvent @relation(fields: [liquidationEventId], references: [id], onDelete: Cascade)
 
   @@index([liquidationEventId])
   @@map("liquidation_seized_assets")
-}
-
-// ─── Event-level tables ────────────────────────────────────────────────────
-
-enum StakeEventType {
-  STAKE
-  UNSTAKE
 }
 
 model StakeEvent {
@@ -282,36 +271,26 @@ model FlashLoanEvent {
   @@map("flash_loan_events")
 }
 
-// ─── Indexer cursor ────────────────────────────────────────────────────────
-
 model IndexerCursor {
-  id            Int      @id @default(autoincrement())
-  contractId    String   @unique
-  lastLedger    Int      @default(0)
-  lastTxHash    String?
+  id             Int      @id @default(autoincrement())
+  contractId     String   @unique
+  lastLedger     Int      @default(0)
+  lastTxHash     String?
   lastEventIndex Int?
-  updatedAt     DateTime @updatedAt
+  updatedAt      DateTime @updatedAt
 
   @@map("indexer_cursors")
 }
 
-// ─── Time-series aggregation tables ───────────────────────────────────────
-
-enum RevenueSource {
-  LENDING
-  LP
-  TREASURY
-}
-
 model LendingUtilizationSnapshot {
-  id               Int      @id @default(autoincrement())
-  contractId       String
-  windowStart      DateTime
-  windowEnd        DateTime
-  totalDeposited   BigInt
-  totalBorrowed    BigInt
-  utilizationRate  Float
-  createdAt        DateTime @default(now())
+  id              Int      @id @default(autoincrement())
+  contractId      String
+  windowStart     DateTime
+  windowEnd       DateTime
+  totalDeposited  BigInt
+  totalBorrowed   BigInt
+  utilizationRate Float
+  createdAt       DateTime @default(now())
 
   @@unique([contractId, windowStart])
   @@index([contractId, windowStart])
@@ -331,16 +310,14 @@ model RevenueSnapshot {
   @@map("revenue_snapshots")
 }
 
-// ─── Cohort / retention tables ─────────────────────────────────────────────
-
 model WalletFirstActivity {
-  id               Int      @id @default(autoincrement())
-  wallet           String   @unique
-  firstStakeLedger Int?
-  firstStakeAt     DateTime?
+  id                Int       @id @default(autoincrement())
+  wallet            String    @unique
+  firstStakeLedger  Int?
+  firstStakeAt      DateTime?
   firstBorrowLedger Int?
-  firstBorrowAt    DateTime?
-  updatedAt        DateTime @updatedAt
+  firstBorrowAt     DateTime?
+  updatedAt         DateTime  @updatedAt
 
   @@index([firstStakeAt])
   @@index([firstBorrowAt])
@@ -364,13 +341,13 @@ model WalletDailyActivity {
 }
 
 model CohortRetention {
-  id             Int      @id @default(autoincrement())
-  cohortDate     DateTime @db.Date
-  dayOffset      Int
-  totalWallets   Int
+  id              Int      @id @default(autoincrement())
+  cohortDate      DateTime @db.Date
+  dayOffset       Int
+  totalWallets    Int
   retainedWallets Int
-  retentionRate  Float
-  computedAt     DateTime @default(now())
+  retentionRate   Float
+  computedAt      DateTime @default(now())
 
   @@unique([cohortDate, dayOffset])
   @@index([cohortDate])
@@ -378,14 +355,25 @@ model CohortRetention {
 }
 
 model CohortAvgPositionSize {
-  id               Int      @id @default(autoincrement())
-  cohortDate       DateTime @db.Date
-  dayOffset        Int
+  id                Int      @id @default(autoincrement())
+  cohortDate        DateTime @db.Date
+  dayOffset         Int
   avgCollateralSize Float
-  avgBorrowSize    Float
-  computedAt       DateTime @default(now())
+  avgBorrowSize     Float
+  computedAt        DateTime @default(now())
 
   @@unique([cohortDate, dayOffset])
   @@index([cohortDate])
   @@map("cohort_avg_position_size")
+}
+
+enum StakeEventType {
+  STAKE
+  UNSTAKE
+}
+
+enum RevenueSource {
+  LENDING
+  LP
+  TREASURY
 }

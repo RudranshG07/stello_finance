@@ -8,11 +8,15 @@ import { CONTRACTS } from '../config/contracts';
 // Known Stellar asset labels — extend as new collaterals are added.
 const KNOWN_ASSET_LABELS: Record<string, string> = {
   [CONTRACTS.sxlmToken]: 'sXLM',
-  // Testnet / mainnet SAC addresses for common stablecoins (fill in when deployed).
-  // Example placeholders — replace with actual contract IDs when available:
-  // 'C...USDC': 'USDC',
-  // 'C...EURC': 'EURC',
-  // 'C...yXLM': 'yXLM',
+  ...(import.meta.env.VITE_USDC_SAC_CONTRACT_ID
+    ? { [import.meta.env.VITE_USDC_SAC_CONTRACT_ID as string]: 'USDC' }
+    : {}),
+  ...(import.meta.env.VITE_EURC_SAC_CONTRACT_ID
+    ? { [import.meta.env.VITE_EURC_SAC_CONTRACT_ID as string]: 'EURC' }
+    : {}),
+  ...(import.meta.env.VITE_YXLM_SAC_CONTRACT_ID
+    ? { [import.meta.env.VITE_YXLM_SAC_CONTRACT_ID as string]: 'yXLM' }
+    : {}),
 };
 
 function assetLabel(address: string): string {
@@ -95,6 +99,23 @@ export default function Lending() {
   const totalCollateralValue = position.collateralValueXlm;
   const hasCollateral = totalCollateralValue > 0;
 
+  // Health factor is mathematically ∞ when there is no debt.
+  // Backends often return Number.MAX_SAFE_INTEGER (9007199254740991) as a sentinel — always
+  // override with ∞ when borrowed is 0 so the UI never looks broken.
+  const hasDebt = position.xlmBorrowed > 0;
+  const displayHealthFactor = !hasDebt
+    ? '∞'
+    : Number.isFinite(position.healthFactor) && position.healthFactor > 0
+      ? position.healthFactor.toFixed(2)
+      : '—';
+  const healthFactorColor = !hasDebt
+    ? 'text-green-400'
+    : position.healthFactor > 1.5
+      ? 'text-green-400'
+      : position.healthFactor > 1.0
+        ? 'text-yellow-400'
+        : 'text-red-400';
+
   // Amount deposited for the currently selected asset.
   const selectedAssetEntry = position.collaterals.find((c) => c.asset === selectedAsset);
   const selectedAssetDeposited = selectedAssetEntry?.amount ?? 0;
@@ -163,11 +184,8 @@ export default function Lending() {
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-gray-400">Health Factor</span>
-                <span className={`font-bold ${
-                  position.healthFactor > 1.5 ? 'text-green-400' :
-                  position.healthFactor > 1.0 ? 'text-yellow-400' : 'text-red-400'
-                }`}>
-                  {position.healthFactor > 0 ? position.healthFactor.toFixed(2) : '—'}
+                <span className={`font-bold ${healthFactorColor}`}>
+                  {displayHealthFactor}
                 </span>
               </div>
               <div className="flex justify-between text-sm">
@@ -177,7 +195,7 @@ export default function Lending() {
             </div>
           )}
 
-          {position.healthFactor > 0 && position.healthFactor < 1.2 && (
+          {hasDebt && position.healthFactor > 0 && position.healthFactor < 1.2 && (
             <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20">
               <AlertTriangle className="w-4 h-4 text-red-400" />
               <span className="text-xs text-red-400">

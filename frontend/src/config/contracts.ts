@@ -7,12 +7,17 @@ export const NETWORK = {
 } as const;
 
 export const CONTRACTS = {
-  // Deployed to mainnet ✅
+  // Fallbacks are mainnet addresses — override via env for testnet
   sxlmToken: import.meta.env.VITE_SXLM_TOKEN_CONTRACT_ID || 'CCGFHMW3NZD5Z7ATHYHZSEG6ABCJADUHP5HIAWFPR37CP4VGNEDQO7FJ',
   staking: import.meta.env.VITE_STAKING_CONTRACT_ID || 'CDYXKWVDGEVA6OSIGN7GRAPPRN6AKID35OJL5ZZQIBCMECZ35KGL45PS',
   lending: import.meta.env.VITE_LENDING_CONTRACT_ID || 'CAOWXZ6BWA2ZYY7GHD75OFKADKUJS4WCKPDYGGXULQWFJRB55TXAQNJG',
   lpPool: import.meta.env.VITE_LP_POOL_CONTRACT_ID || 'CAW2DRMOI3CCJWKVMEUWYJUEQHXB4S4DR72HNL2DWQCMQQUH3LFFVLHV',
   governance: import.meta.env.VITE_GOVERNANCE_CONTRACT_ID || 'CB7LV3FBQ7US26GVC7SM7RMX22IEEHAEUL7V3TDDWM32DHA5TDFDDEP4',
+  // New: price oracle and collateral asset SACs (set in env)
+  priceFeed: import.meta.env.VITE_PRICE_FEED_CONTRACT_ID as string,
+  usdcSac: import.meta.env.VITE_USDC_SAC_CONTRACT_ID as string,
+  eurcSac: import.meta.env.VITE_EURC_SAC_CONTRACT_ID as string,
+  yxlmSac: import.meta.env.VITE_YXLM_SAC_CONTRACT_ID as string,
 } as const;
 
 export const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
