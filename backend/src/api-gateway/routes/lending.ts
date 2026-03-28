@@ -8,18 +8,40 @@ import {
   scValToNative,
   TransactionBuilder,
   BASE_FEE,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { config } from "../../config/index.js";
 import { PrismaClient } from "@prisma/client";
 
+const RATE_PRECISION = 1e7;
+// i128::MAX — returned by the contract when the user has no debt.
+const I128_MAX = BigInt("170141183460469231731687303715884105727");
+
+/**
+ * Schema for deposit/withdraw: require `assetAddress` so the UI can choose
+ * which supported collateral to move.
+ */
+const depositWithdrawSchema = z.object({
+  userAddress: z.string().min(56).max(56),
+  amount: z.number().positive(),
+  assetAddress: z.string().min(56).max(56),
+});
+
+/** Schema for borrow / repay: no asset selector needed (XLM only). */
 const amountSchema = z.object({
   userAddress: z.string().min(56).max(56),
   amount: z.number().positive(),
 });
 
+/**
+ * Schema for liquidation.
+ * `seizeAssets` is optional — when omitted the endpoint fetches all supported
+ * collaterals from the contract and passes them as the seizure list.
+ */
 const liquidateSchema = z.object({
   liquidatorAddress: z.string().min(56).max(56),
   borrowerAddress: z.string().min(56).max(56),
+  seizeAssets: z.array(z.string().min(56).max(56)).optional(),
 });
 
 // Higher inclusion fee to avoid txINSUFFICIENT_FEE when simulation
@@ -31,7 +53,7 @@ async function buildContractTx(
   server: rpc.Server,
   contractId: string,
   method: string,
-  args: any[],
+  args: xdr.ScVal[],
   userAddress: string
 ) {
   const contract = new Contract(contractId);
@@ -50,22 +72,30 @@ async function buildContractTx(
 
   if (rpc.Api.isSimulationError(simResult)) {
     const errStr = String(simResult.error);
-    // Translate common WASM trap errors into human-readable messages
+    // Translate common WASM trap errors into human-readable messages.
     if (errStr.includes("UnreachableCodeReached")) {
       if (method === "deposit_collateral") {
-        throw new Error("Insufficient sXLM balance. Stake XLM first to receive sXLM, then deposit it as collateral.");
+        throw new Error(
+          "Insufficient balance or unsupported asset. Make sure you hold enough of the selected collateral."
+        );
       }
       if (method === "withdraw_collateral") {
-        throw new Error("Withdrawal would make your position unhealthy, or you have no collateral deposited.");
+        throw new Error(
+          "Withdrawal would make your position unhealthy, or you have no collateral deposited."
+        );
       }
       if (method === "borrow") {
-        throw new Error("Borrow exceeds your collateral limit. Deposit more sXLM or reduce the borrow amount.");
+        throw new Error(
+          "Borrow exceeds your collateral limit. Deposit more collateral or reduce the borrow amount."
+        );
       }
       if (method === "repay") {
         throw new Error("Repay amount exceeds your outstanding debt.");
       }
       if (method === "liquidate") {
-        throw new Error("This position cannot be liquidated — it may already be healthy or have no debt.");
+        throw new Error(
+          "This position cannot be liquidated — it may already be healthy or have no debt."
+        );
       }
     }
     throw new Error(`Simulation failed: ${simResult.error}`);
@@ -82,7 +112,7 @@ async function queryContractView(
   server: rpc.Server,
   contractId: string,
   method: string,
-  args: any[]
+  args: xdr.ScVal[]
 ) {
   const contract = new Contract(contractId);
   const op = contract.call(method, ...args);
@@ -102,6 +132,19 @@ async function queryContractView(
     return scValToNative(simResult.result.retval);
   }
   return null;
+}
+
+/** Convert an array of Stellar address strings to a Soroban Vec<Address> ScVal. */
+function addressArrayToScVal(addresses: string[]): xdr.ScVal {
+  return xdr.ScVal.scvVec(addresses.map((a) => new Address(a).toScVal()));
+}
+
+/** Normalise the on-chain health factor (which is i128::MAX when no debt). */
+function normaliseHealthFactor(raw: bigint): number {
+  if (raw === I128_MAX) {
+    return Number.MAX_SAFE_INTEGER; // effectively "no debt / infinitely healthy"
+  }
+  return Number(raw) / RATE_PRECISION;
 }
 
 export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async (
@@ -145,25 +188,26 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
   /**
    * POST /lending/deposit-collateral
-   * Build unsigned tx: deposit sXLM as collateral.
+   * Build unsigned tx: deposit a supported collateral asset.
+   * Body: { userAddress, amount, assetAddress }
    */
   fastify.post("/lending/deposit-collateral", async (request, reply) => {
     try {
-      const body = amountSchema.parse(request.body);
+      const body = depositWithdrawSchema.parse(request.body);
       const stroops = BigInt(Math.floor(body.amount * 1e7));
 
-      // Pre-flight: check user has enough sXLM before simulating
-      const sxlmRaw = await queryContractView(
+      // Pre-flight: check user holds enough of the requested collateral asset.
+      const balanceRaw = await queryContractView(
         server,
-        config.contracts.sxlmTokenContractId,
+        body.assetAddress,
         "balance",
         [new Address(body.userAddress).toScVal()]
       );
-      const sxlmBalance = BigInt(sxlmRaw ?? 0);
-      if (sxlmBalance < stroops) {
-        const available = (Number(sxlmBalance) / 1e7).toFixed(7);
+      const balance = BigInt(balanceRaw ?? 0);
+      if (balance < stroops) {
+        const available = (Number(balance) / 1e7).toFixed(7);
         return reply.status(400).send({
-          error: `Insufficient sXLM balance. You have ${available} sXLM but tried to deposit ${body.amount} sXLM. Stake XLM first to receive sXLM.`,
+          error: `Insufficient balance. You have ${available} of this asset but tried to deposit ${body.amount}. Acquire the asset first.`,
         });
       }
 
@@ -173,6 +217,7 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         "deposit_collateral",
         [
           new Address(body.userAddress).toScVal(),
+          new Address(body.assetAddress).toScVal(),
           nativeToScVal(stroops, { type: "i128" }),
         ],
         body.userAddress
@@ -180,18 +225,22 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Deposit failed";
+      const message =
+        err instanceof Error
+          ? err.message
+          : (err as { message?: string })?.message ?? "Deposit failed";
       reply.status(400).send({ error: message });
     }
   });
 
   /**
    * POST /lending/withdraw-collateral
-   * Build unsigned tx: withdraw sXLM collateral.
+   * Build unsigned tx: withdraw a supported collateral asset.
+   * Body: { userAddress, amount, assetAddress }
    */
   fastify.post("/lending/withdraw-collateral", async (request, reply) => {
     try {
-      const body = amountSchema.parse(request.body);
+      const body = depositWithdrawSchema.parse(request.body);
       const stroops = BigInt(Math.floor(body.amount * 1e7));
 
       const result = await buildContractTx(
@@ -200,6 +249,7 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         "withdraw_collateral",
         [
           new Address(body.userAddress).toScVal(),
+          new Address(body.assetAddress).toScVal(),
           nativeToScVal(stroops, { type: "i128" }),
         ],
         body.userAddress
@@ -207,21 +257,24 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Withdraw failed";
+      const message =
+        err instanceof Error
+          ? err.message
+          : (err as { message?: string })?.message ?? "Withdraw failed";
       reply.status(400).send({ error: message });
     }
   });
 
   /**
    * POST /lending/borrow
-   * Build unsigned tx: borrow XLM against sXLM collateral.
+   * Build unsigned tx: borrow XLM against deposited multi-asset collateral.
    */
   fastify.post("/lending/borrow", async (request, reply) => {
     try {
       const body = amountSchema.parse(request.body);
       const stroops = BigInt(Math.floor(body.amount * 1e7));
 
-      // Pre-flight: check pool has enough XLM liquidity
+      // Pre-flight: check pool has enough XLM liquidity.
       const poolBalRaw = await queryContractView(server, lendingContractId, "get_pool_balance", []);
       const poolBalance = BigInt(poolBalRaw ?? 0);
       if (poolBalance < stroops) {
@@ -244,7 +297,10 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Borrow failed";
+      const message =
+        err instanceof Error
+          ? err.message
+          : (err as { message?: string })?.message ?? "Borrow failed";
       reply.status(400).send({ error: message });
     }
   });
@@ -271,18 +327,44 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Repay failed";
+      const message =
+        err instanceof Error
+          ? err.message
+          : (err as { message?: string })?.message ?? "Repay failed";
       reply.status(400).send({ error: message });
     }
   });
 
   /**
    * POST /lending/liquidate
-   * Build unsigned tx: liquidate an unhealthy position.
+   * Build unsigned tx: full-debt liquidation of an unhealthy position.
+   * Body: { liquidatorAddress, borrowerAddress, seizeAssets?: string[] }
+   *
+   * When `seizeAssets` is omitted the endpoint fetches the full supported
+   * collateral list from the contract and passes it to `liquidate` so that
+   * the contract can seize assets in registration order until the debt is
+   * fully covered.
    */
   fastify.post("/lending/liquidate", async (request, reply) => {
     try {
       const body = liquidateSchema.parse(request.body);
+
+      let seizeAssets: string[];
+      if (body.seizeAssets && body.seizeAssets.length > 0) {
+        seizeAssets = body.seizeAssets;
+      } else {
+        const supported = await queryContractView(
+          server,
+          lendingContractId,
+          "get_supported_collaterals",
+          []
+        );
+        seizeAssets = Array.isArray(supported) ? (supported as string[]) : [];
+      }
+
+      if (seizeAssets.length === 0) {
+        return reply.status(400).send({ error: "No collateral assets available to seize." });
+      }
 
       const result = await buildContractTx(
         server,
@@ -291,165 +373,205 @@ export const lendingRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async
         [
           new Address(body.liquidatorAddress).toScVal(),
           new Address(body.borrowerAddress).toScVal(),
+          addressArrayToScVal(seizeAssets),
         ],
         body.liquidatorAddress
       );
 
       return result;
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Liquidation failed";
+      const message =
+        err instanceof Error
+          ? err.message
+          : (err as { message?: string })?.message ?? "Liquidation failed";
       reply.status(400).send({ error: message });
     }
   });
 
   /**
    * GET /lending/position/:wallet
-   * Query on-chain position via contract view + sync to DB.
+   * Query on-chain multi-collateral position via a single `get_user_position_detail`
+   * call, then sync the aggregate values to the DB.
    */
   fastify.get("/lending/position/:wallet", async (request, reply) => {
     try {
       const { wallet } = request.params as { wallet: string };
 
-      // Query on-chain position + protocol params in parallel
-      const [position, healthFactor, cfBpsRaw, erRaw] = await Promise.all([
-        queryContractView(server, lendingContractId, "get_position", [new Address(wallet).toScVal()]),
-        queryContractView(server, lendingContractId, "health_factor", [new Address(wallet).toScVal()]),
-        queryContractView(server, lendingContractId, "get_collateral_factor", []),
-        queryContractView(server, lendingContractId, "get_exchange_rate", []),
+      // `get_user_position_detail` returns everything the UI needs in one round-trip.
+      const [posDetail, borrowRateBpsRaw] = await Promise.all([
+        queryContractView(server, lendingContractId, "get_user_position_detail", [
+          new Address(wallet).toScVal(),
+        ]),
+        queryContractView(server, lendingContractId, "get_borrow_rate", []),
       ]);
 
-      let collateral = BigInt(0);
-      let borrowed = BigInt(0);
-      let hf = 0;
+      // Decode UserPositionDetail (scValToNative turns the Soroban ScMap into a plain object).
+      type RawEntry = { asset: unknown; amount: unknown };
+      type RawDetail = {
+        collaterals?: RawEntry[];
+        collateral_value_xlm?: unknown;
+        borrowed?: unknown;
+        health_factor?: unknown;
+        max_borrow?: unknown;
+      };
 
-      if (position) {
-        // get_position returns (i128, i128) tuple
-        collateral = BigInt(position[0] ?? 0);
-        borrowed = BigInt(position[1] ?? 0);
-      }
-      if (healthFactor !== null) {
-        hf = Number(healthFactor) / 1e7; // RATE_PRECISION
-      }
+      const pd = (posDetail ?? {}) as RawDetail;
 
-      // Compute max borrow matching the contract formula:
-      // max_borrow_stroops = collateral * er * cf_bps / (10000 * RATE_PRECISION)
-      const cfBps = Number(cfBpsRaw ?? 7000);
-      const er = Number(erRaw ?? 10_000_000); // in RATE_PRECISION units
-      const maxBorrowStroops = (Number(collateral) * er * cfBps) / (10000 * 1e7);
-      const maxBorrow = maxBorrowStroops / 1e7;
+      const collateralValueXlm = BigInt(String(pd.collateral_value_xlm ?? 0));
+      const borrowed = BigInt(String(pd.borrowed ?? 0));
+      const maxBorrow = BigInt(String(pd.max_borrow ?? 0));
+      const healthFactor = normaliseHealthFactor(BigInt(String(pd.health_factor ?? 0)));
 
-      // Sync to DB
-      if (collateral > 0 || borrowed > 0) {
-        const existing = await prisma.collateralPosition.findFirst({
+      const collaterals = (pd.collaterals ?? []).map((entry) => ({
+        asset: String(entry.asset),
+        amountRaw: BigInt(String(entry.amount ?? 0)).toString(),
+        amount: Number(entry.amount ?? 0) / 1e7,
+      }));
+
+      // Sync aggregate values to DB.
+      if (collateralValueXlm > 0n || borrowed > 0n) {
+        await prisma.collateralPosition.upsert({
           where: { wallet },
+          create: {
+            wallet,
+            collateralValueXlm,
+            xlmBorrowed: borrowed,
+            healthFactor,
+            maxBorrow,
+          },
+          update: {
+            collateralValueXlm,
+            xlmBorrowed: borrowed,
+            healthFactor,
+            maxBorrow,
+            updatedAt: new Date(),
+          },
         });
-        if (existing) {
-          await prisma.collateralPosition.update({
-            where: { id: existing.id },
-            data: {
-              sxlmDeposited: collateral,
-              xlmBorrowed: borrowed,
-              healthFactor: hf,
-              updatedAt: new Date(),
-            },
-          });
-        } else {
-          await prisma.collateralPosition.create({
-            data: {
-              wallet,
-              sxlmDeposited: collateral,
-              xlmBorrowed: borrowed,
-              healthFactor: hf,
-            },
-          });
-        }
+
+        // Sync per-asset collateral balances to collateral_deposits.
+        await Promise.all(
+          collaterals.map((c) =>
+            prisma.collateralDeposit.upsert({
+              where: { wallet_asset: { wallet, asset: c.asset } },
+              create: { wallet, asset: c.asset, amount: BigInt(c.amountRaw) },
+              update: { amount: BigInt(c.amountRaw), updatedAt: new Date() },
+            })
+          )
+        );
       }
 
       return {
         wallet,
-        sxlmDeposited: Number(collateral) / 1e7,
-        sxlmDepositedRaw: collateral.toString(),
+        // Per-asset collateral entries (one per supported asset, amount=0 if not deposited).
+        collaterals,
+        // Aggregate collateral value in XLM.
+        collateralValueXlm: Number(collateralValueXlm) / 1e7,
+        collateralValueXlmRaw: collateralValueXlm.toString(),
+        // Debt.
         xlmBorrowed: Number(borrowed) / 1e7,
         xlmBorrowedRaw: borrowed.toString(),
-        healthFactor: hf,
-        maxBorrow,
-        collateralFactorBps: cfBps,
-        exchangeRate: er / 1e7,
+        // Risk metrics.
+        healthFactor,
+        maxBorrow: Number(maxBorrow) / 1e7,
+        maxBorrowRaw: maxBorrow.toString(),
+        // Protocol params.
+        borrowRateBps: Number(borrowRateBpsRaw ?? 500),
       };
     } catch (err: unknown) {
-      // Fallback to DB if contract query fails
+      // Fallback to DB if the contract query fails.
       const { wallet } = request.params as { wallet: string };
-      const dbPosition = await prisma.collateralPosition.findFirst({
-        where: { wallet },
-        orderBy: { updatedAt: "desc" },
-      });
+      const [dbPosition, dbDeposits] = await Promise.all([
+        prisma.collateralPosition.findUnique({ where: { wallet } }),
+        prisma.collateralDeposit.findMany({ where: { wallet } }),
+      ]);
+      const collateralsFromDB = dbDeposits.map((d) => ({
+        asset: d.asset,
+        amountRaw: d.amount.toString(),
+        amount: Number(d.amount) / 1e7,
+      }));
       return dbPosition
         ? {
             wallet,
-            sxlmDeposited: Number(dbPosition.sxlmDeposited) / 1e7,
-            sxlmDepositedRaw: dbPosition.sxlmDeposited.toString(),
+            collaterals: collateralsFromDB,
+            collateralValueXlm: Number(dbPosition.collateralValueXlm) / 1e7,
+            collateralValueXlmRaw: dbPosition.collateralValueXlm.toString(),
             xlmBorrowed: Number(dbPosition.xlmBorrowed) / 1e7,
             xlmBorrowedRaw: dbPosition.xlmBorrowed.toString(),
             healthFactor: dbPosition.healthFactor,
-            maxBorrow: 0, // cannot compute without on-chain CF/ER
-            collateralFactorBps: 7000,
-            exchangeRate: 1,
+            maxBorrow: Number(dbPosition.maxBorrow) / 1e7,
+            maxBorrowRaw: dbPosition.maxBorrow.toString(),
+            borrowRateBps: 500,
           }
         : {
             wallet,
-            sxlmDeposited: 0,
-            sxlmDepositedRaw: "0",
+            collaterals: [],
+            collateralValueXlm: 0,
+            collateralValueXlmRaw: "0",
             xlmBorrowed: 0,
             xlmBorrowedRaw: "0",
             healthFactor: 0,
             maxBorrow: 0,
-            collateralFactorBps: 7000,
-            exchangeRate: 1,
+            maxBorrowRaw: "0",
+            borrowRateBps: 500,
           };
     }
   });
 
   /**
    * GET /lending/stats
-   * Query on-chain lending stats.
+   * Query on-chain lending stats with per-asset collateral breakdown.
    */
   fastify.get("/lending/stats", async () => {
     try {
-      const [totalCollateral, totalBorrowed, cfBpsRaw, ltBpsRaw, borrowRateBpsRaw, poolBalanceRaw] =
+      const [supportedRaw, totalBorrowed, borrowRateBpsRaw, poolBalanceRaw] =
         await Promise.all([
-          queryContractView(server, lendingContractId, "total_collateral", []),
+          queryContractView(server, lendingContractId, "get_supported_collaterals", []),
           queryContractView(server, lendingContractId, "total_borrowed", []),
-          queryContractView(server, lendingContractId, "get_collateral_factor", []),
-          queryContractView(server, lendingContractId, "get_liquidation_threshold", []),
           queryContractView(server, lendingContractId, "get_borrow_rate", []),
           queryContractView(server, lendingContractId, "get_pool_balance", []),
         ]);
 
-      const tc = Number(totalCollateral ?? 0);
+      const supportedAssets: string[] = Array.isArray(supportedRaw)
+        ? (supportedRaw as string[])
+        : [];
+
+      // Fetch per-asset totals and risk params in parallel.
+      const assetStats = await Promise.all(
+        supportedAssets.map(async (asset) => {
+          const assetScVal = new Address(asset).toScVal();
+          const [totalDeposited, cfBps, ltBps] = await Promise.all([
+            queryContractView(server, lendingContractId, "total_collateral_for_asset", [assetScVal]),
+            queryContractView(server, lendingContractId, "get_collateral_factor", [assetScVal]),
+            queryContractView(server, lendingContractId, "get_liquidation_threshold", [assetScVal]),
+          ]);
+          return {
+            asset,
+            totalDeposited: Number(totalDeposited ?? 0) / 1e7,
+            totalDepositedRaw: String(totalDeposited ?? 0),
+            collateralFactorBps: Number(cfBps ?? 0),
+            liquidationThresholdBps: Number(ltBps ?? 0),
+          };
+        })
+      );
+
       const tb = Number(totalBorrowed ?? 0);
 
       return {
-        totalCollateral: tc / 1e7,
-        totalCollateralRaw: (totalCollateral ?? 0).toString(),
         totalBorrowed: tb / 1e7,
-        totalBorrowedRaw: (totalBorrowed ?? 0).toString(),
+        totalBorrowedRaw: String(totalBorrowed ?? 0),
         poolBalance: Number(poolBalanceRaw ?? 0) / 1e7,
-        collateralFactorBps: Number(cfBpsRaw ?? 7000),
-        liquidationThresholdBps: Number(ltBpsRaw ?? 8000),
         borrowRateBps: Number(borrowRateBpsRaw ?? 500),
-        utilizationRate: tc > 0 ? tb / tc : 0,
+        supportedAssets,
+        assetStats,
       };
     } catch {
       return {
-        totalCollateral: 0,
-        totalCollateralRaw: "0",
         totalBorrowed: 0,
         totalBorrowedRaw: "0",
         poolBalance: 0,
-        collateralFactorBps: 7000,
-        liquidationThresholdBps: 8000,
         borrowRateBps: 500,
-        utilizationRate: 0,
+        supportedAssets: [],
+        assetStats: [],
       };
     }
   });

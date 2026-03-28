@@ -174,16 +174,19 @@ export class MetricAggregator {
         "[MetricAggregator] On-chain view unavailable; using DB fallback for utilization"
       );
 
+      // totalDeposited is the raw sum of all collateral_deposits amounts.
+      // Note: amounts span multiple assets with different units; this is a
+      // best-effort approximation used only when the on-chain view is unavailable.
       const [depositedAgg, borrowedAgg] = await Promise.all([
-        this.prisma.collateralPosition.aggregate({
-          _sum: { sxlmDeposited: true },
+        this.prisma.collateralDeposit.aggregate({
+          _sum: { amount: true },
         }),
         this.prisma.collateralPosition.aggregate({
           _sum: { xlmBorrowed: true },
         }),
       ]);
 
-      totalDeposited = depositedAgg._sum.sxlmDeposited ?? BigInt(0);
+      totalDeposited = depositedAgg._sum.amount ?? BigInt(0);
       totalBorrowed = borrowedAgg._sum.xlmBorrowed ?? BigInt(0);
     }
 
@@ -281,17 +284,25 @@ export class MetricAggregator {
     });
     const flashFees = flashFeeAgg._sum.fee ?? BigInt(0);
 
-    // Liquidation bonus: sum of max(0, collateralSeized − debtRepaid) per event
+    // Liquidation bonus: sum of max(0, totalSeized − debtRepaid) per event,
+    // where totalSeized is the sum of all seizedAssets amounts for that event.
     const liquidations = await this.prisma.liquidationEvent.findMany({
       where: {
         contractId: config.contracts.lendingContractId,
         ledgerClosedAt: { gte: windowStart, lt: windowEnd },
       },
-      select: { collateralSeized: true, debtRepaid: true },
+      select: {
+        debtRepaid: true,
+        seizedAssets: { select: { amount: true } },
+      },
     });
 
     const liquidationBonus = liquidations.reduce((acc, ev) => {
-      const bonus = ev.collateralSeized - ev.debtRepaid;
+      const totalSeized = ev.seizedAssets.reduce(
+        (s, a) => s + a.amount,
+        BigInt(0)
+      );
+      const bonus = totalSeized - ev.debtRepaid;
       return bonus > BigInt(0) ? acc + bonus : acc;
     }, BigInt(0));
 

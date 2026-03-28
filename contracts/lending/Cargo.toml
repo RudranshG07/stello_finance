@@ -9,6 +9,7 @@ crate-type = ["cdylib"]
 [dependencies]
 soroban-sdk = { workspace = true }
 soroban-token-sdk = { workspace = true }
+price-feed = { path = "../price-feed", default-features = false }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }

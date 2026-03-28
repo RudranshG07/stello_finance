@@ -1,0 +1,21 @@
+[package]
+name = "price-feed"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# "contract" is enabled by default so `stellar contract build` produces the
+# deployable WASM.  Dependents (e.g. lending) must disable it to avoid
+# duplicate exported symbols:
+#   price-feed = { path = "../price-feed", default-features = false }
+contract = []
+default = ["contract"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }

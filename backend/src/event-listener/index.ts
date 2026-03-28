@@ -316,16 +316,27 @@ export class EventListenerService {
       const values = decoded as unknown[];
       console.log(`[EventListener] Liquidation at ledger ${event.ledger}`, values);
 
-      // Record liquidation event in DB
-      if (Array.isArray(values) && values.length >= 4) {
+      // Record liquidation event in DB.
+      // values: [liquidator, borrower, debtRepaid, seizedAssets: (asset, amount)[]]
+      if (Array.isArray(values) && values.length >= 3) {
         try {
+          const rawSeized = values[3];
+          const seizedAssets: Array<{ asset: string; amount: bigint }> =
+            Array.isArray(rawSeized)
+              ? (rawSeized as Array<[unknown, unknown]>).map(([a, amt]) => ({
+                  asset: String(a),
+                  amount: BigInt(amt as any),
+                }))
+              : [];
           await this.prisma.liquidationEvent.create({
             data: {
               liquidator: String(values[0]),
               borrower: String(values[1]),
               debtRepaid: BigInt(values[2] as any),
-              collateralSeized: BigInt(values[3] as any),
               ledger: event.ledger,
+              seizedAssets: {
+                createMany: { data: seizedAssets },
+              },
             },
           });
         } catch {

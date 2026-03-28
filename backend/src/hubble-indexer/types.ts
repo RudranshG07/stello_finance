@@ -83,7 +83,8 @@ export interface ParsedLiquidationEvent extends ParsedEventBase {
   liquidator: string;
   borrower: string;
   debtRepaid: bigint;
-  collateralSeized: bigint;
+  /** One entry per collateral asset seized; replaces the old single collateralSeized field. */
+  seizedAssets: Array<{ asset: string; amount: bigint }>;
 }
 
 export type ParsedEvent =

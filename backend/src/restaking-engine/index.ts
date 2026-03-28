@@ -198,10 +198,13 @@ export class RestakingEngine {
   }
 
   private async getPositionFromDB(wallet: string): Promise<RestakingPosition> {
-    const position = await this.prisma.collateralPosition.findFirst({
-      where: { wallet },
-      orderBy: { updatedAt: "desc" },
-    });
+    const [position, deposits] = await Promise.all([
+      this.prisma.collateralPosition.findUnique({ where: { wallet } }),
+      this.prisma.collateralDeposit.aggregate({
+        where: { wallet },
+        _sum: { amount: true },
+      }),
+    ]);
 
     if (!position) {
       return {
@@ -215,7 +218,7 @@ export class RestakingEngine {
       };
     }
 
-    const collateral = Number(position.sxlmDeposited) / 1e7;
+    const collateral = Number(deposits._sum.amount ?? BigInt(0)) / 1e7;
     const borrowed = Number(position.xlmBorrowed) / 1e7;
     const effectiveLeverage =
       collateral > 0 && borrowed > 0
