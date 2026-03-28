@@ -1822,7 +1822,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000006"
               },
               {
-                "symbol": "execute_proposal"
+                "symbol": "queue_proposal"
               }
             ],
             "data": {
@@ -1908,7 +1908,7 @@
                   "string": "contract call failed"
                 },
                 {
-                  "symbol": "execute_proposal"
+                  "symbol": "queue_proposal"
                 },
                 {
                   "vec": [

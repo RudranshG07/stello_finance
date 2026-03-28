@@ -394,6 +394,43 @@ impl LpPoolContract {
         extend_instance(&env);
         read_i128(&env, &DataKey::TotalLpSupply)
     }
+
+    /// Returns user's pro-rata share of pool reserves (xlm_share, sxlm_share).
+    /// Equivalent to what they would receive if they called remove_liquidity with their full LP balance.
+    pub fn get_lp_position(env: Env, user: Address) -> (i128, i128) {
+        extend_instance(&env);
+        extend_lp_balance(&env, &user);
+
+        let user_lp = read_lp_balance(&env, &user);
+        let total_lp = read_i128(&env, &DataKey::TotalLpSupply);
+
+        if total_lp == 0 || user_lp == 0 {
+            return (0, 0);
+        }
+
+        let reserve_xlm = read_i128(&env, &DataKey::ReserveXlm);
+        let reserve_sxlm = read_i128(&env, &DataKey::ReserveSxlm);
+
+        let xlm_share = user_lp * reserve_xlm / total_lp;
+        let sxlm_share = user_lp * reserve_sxlm / total_lp;
+
+        (xlm_share, sxlm_share)
+    }
+
+    /// Returns user's pool ownership in basis points (10,000 = 100%).
+    pub fn get_lp_share_bps(env: Env, user: Address) -> i128 {
+        extend_instance(&env);
+        extend_lp_balance(&env, &user);
+
+        let user_lp = read_lp_balance(&env, &user);
+        let total_lp = read_i128(&env, &DataKey::TotalLpSupply);
+
+        if total_lp == 0 {
+            return 0;
+        }
+
+        user_lp * BPS_DENOMINATOR / total_lp
+    }
 }
 
 #[cfg(test)]
@@ -568,5 +605,87 @@ mod test {
         client.add_liquidity(&user, &100_000_0000000, &100_000_0000000);
         client.swap_sxlm_to_xlm(&user, &10_000_0000000, &0);
         assert_eq!(client.accrued_protocol_fees(), 0);
+    }
+
+    #[test]
+    fn test_get_lp_position_proportional() {
+        let (env, contract_id, _, _, user, _) = setup_test();
+        let client = LpPoolContractClient::new(&env, &contract_id);
+
+        // Single LP owns 100% of pool
+        client.add_liquidity(&user, &50_000_0000000, &50_000_0000000);
+
+        let (xlm_share, sxlm_share) = client.get_lp_position(&user);
+        assert_eq!(xlm_share, 50_000_0000000);
+        assert_eq!(sxlm_share, 50_000_0000000);
+
+        // User owns 100% = 10,000 bps
+        let share_bps = client.get_lp_share_bps(&user);
+        assert_eq!(share_bps, 10_000);
+    }
+
+    #[test]
+    fn test_get_lp_position_partial_ownership() {
+        let (env, contract_id, sxlm_id, native_id, user1, _) = setup_test();
+        let user2 = Address::generate(&env);
+        let client = LpPoolContractClient::new(&env, &contract_id);
+
+        // Mint tokens to user2
+        StellarAssetClient::new(&env, &sxlm_id).mint(&user2, &1_000_000_0000000);
+        StellarAssetClient::new(&env, &native_id).mint(&user2, &1_000_000_0000000);
+
+        // User1 adds 100k each
+        client.add_liquidity(&user1, &100_000_0000000, &100_000_0000000);
+
+        // User2 adds same amount
+        client.add_liquidity(&user2, &100_000_0000000, &100_000_0000000);
+
+        // Each user should own 50%
+        let (xlm1, sxlm1) = client.get_lp_position(&user1);
+        let (xlm2, sxlm2) = client.get_lp_position(&user2);
+
+        assert_eq!(xlm1, 100_000_0000000);
+        assert_eq!(sxlm1, 100_000_0000000);
+        assert_eq!(xlm2, 100_000_0000000);
+        assert_eq!(sxlm2, 100_000_0000000);
+
+        // Each owns 50% = 5000 bps
+        assert_eq!(client.get_lp_share_bps(&user1), 5000);
+        assert_eq!(client.get_lp_share_bps(&user2), 5000);
+    }
+
+    #[test]
+    fn test_get_lp_position_empty_returns_zero() {
+        let (env, contract_id, _, _, _, _) = setup_test();
+        let client = LpPoolContractClient::new(&env, &contract_id);
+        let non_lp = Address::generate(&env);
+
+        // No liquidity in pool
+        let (xlm, sxlm) = client.get_lp_position(&non_lp);
+        assert_eq!(xlm, 0);
+        assert_eq!(sxlm, 0);
+        assert_eq!(client.get_lp_share_bps(&non_lp), 0);
+    }
+
+    #[test]
+    fn test_get_lp_position_after_swap_reflects_new_reserves() {
+        let (env, contract_id, _, _, user, _) = setup_test();
+        let client = LpPoolContractClient::new(&env, &contract_id);
+
+        client.add_liquidity(&user, &100_000_0000000, &100_000_0000000);
+
+        let (xlm_before, sxlm_before) = client.get_lp_position(&user);
+
+        // Perform swap: XLM → sXLM
+        client.swap_xlm_to_sxlm(&user, &10_000_0000000, &0);
+
+        let (xlm_after, sxlm_after) = client.get_lp_position(&user);
+
+        // After swap, more XLM and less sXLM in pool
+        assert!(xlm_after > xlm_before);
+        assert!(sxlm_after < sxlm_before);
+
+        // Share percentage should remain 100% (10,000 bps)
+        assert_eq!(client.get_lp_share_bps(&user), 10_000);
     }
 }

@@ -26,6 +26,10 @@ pub enum DataKey {
     Param(String),
     // Total sXLM supply reference for quorum calculation (set by admin)
     ReferenceSupply,
+    // Timelock delay in ledgers (0 = no delay, default)
+    TimelockDelay,
+    // QueuedAt(proposal_id) → ready_ledger (0 = not queued)
+    QueuedAt(u64),
 }
 
 #[derive(Clone)]
@@ -88,6 +92,13 @@ fn read_quorum_bps(env: &Env) -> i128 {
         .instance()
         .get(&DataKey::QuorumBps)
         .unwrap_or(1000) // 10%
+}
+
+fn read_timelock_delay(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TimelockDelay)
+        .unwrap_or(0u32) // 0 = no delay (default)
 }
 
 fn next_proposal_id(env: &Env) -> u64 {
@@ -187,6 +198,18 @@ impl GovernanceContract {
         env.storage().instance().set(&DataKey::ReferenceSupply, &supply);
     }
 
+    /// Set timelock delay in ledgers. Only callable by admin.
+    pub fn set_timelock_delay(env: Env, delay_ledgers: u32) {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        extend_instance(&env);
+        env.storage().instance().set(&DataKey::TimelockDelay, &delay_ledgers);
+        env.events().publish(
+            (soroban_sdk::symbol_short!("timelock"),),
+            delay_ledgers,
+        );
+    }
+
     /// Create a new governance proposal. Proposer must hold minimum sXLM balance.
     pub fn create_proposal(
         env: Env,
@@ -272,13 +295,18 @@ impl GovernanceContract {
         );
     }
 
-    /// Execute a proposal if quorum met and passed.
-    /// Stores the new parameter value on-chain for the admin/backend to read and propagate.
-    pub fn execute_proposal(env: Env, proposal_id: u64) {
+    /// Queue a proposal for execution after timelock delay.
+    /// Validates that the proposal passed and met quorum.
+    pub fn queue_proposal(env: Env, proposal_id: u64) {
         extend_instance(&env);
         extend_proposal(&env, proposal_id);
 
-        let mut proposal = read_proposal(&env, proposal_id);
+        let proposal = read_proposal(&env, proposal_id);
+
+        // Check if already queued
+        let queued_key = DataKey::QueuedAt(proposal_id);
+        let already_queued: u32 = env.storage().instance().get(&queued_key).unwrap_or(0);
+        assert!(already_queued == 0, "proposal already queued");
 
         assert!(!proposal.executed, "proposal already executed");
 
@@ -288,7 +316,7 @@ impl GovernanceContract {
             "voting period not ended"
         );
 
-        // Check quorum: total_votes must be >= reference_supply * quorum_bps / BPS_DENOMINATOR
+        // Check quorum
         let total_votes = proposal.votes_for + proposal.votes_against;
         assert!(total_votes > 0, "no votes cast");
 
@@ -306,6 +334,40 @@ impl GovernanceContract {
         assert!(
             proposal.votes_for > proposal.votes_against,
             "proposal did not pass"
+        );
+
+        // Calculate ready ledger
+        let delay = read_timelock_delay(&env);
+        let ready_ledger = current_ledger + delay;
+
+        env.storage().instance().set(&queued_key, &ready_ledger);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("queued"),),
+            (proposal_id, ready_ledger),
+        );
+    }
+
+    /// Execute a proposal if quorum met and passed.
+    /// Stores the new parameter value on-chain for the admin/backend to read and propagate.
+    pub fn execute_proposal(env: Env, proposal_id: u64) {
+        extend_instance(&env);
+        extend_proposal(&env, proposal_id);
+
+        let mut proposal = read_proposal(&env, proposal_id);
+
+        assert!(!proposal.executed, "proposal already executed");
+
+        // Check if proposal was queued
+        let queued_key = DataKey::QueuedAt(proposal_id);
+        let ready_ledger: u32 = env.storage().instance().get(&queued_key).unwrap_or(0);
+        assert!(ready_ledger > 0, "proposal not queued");
+
+        // Check if timelock has elapsed
+        let current_ledger = env.ledger().sequence();
+        assert!(
+            current_ledger >= ready_ledger,
+            "timelock not elapsed"
         );
 
         // Store the approved parameter value on-chain
@@ -363,6 +425,19 @@ impl GovernanceContract {
                 .extend_ttl(&param_key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
         }
         val
+    }
+
+    /// Get timelock delay in ledgers (0 = no delay).
+    pub fn get_timelock_delay(env: Env) -> u32 {
+        extend_instance(&env);
+        read_timelock_delay(&env)
+    }
+
+    /// Get ready ledger for a queued proposal (0 = not queued).
+    pub fn get_timelock_ready_ledger(env: Env, proposal_id: u64) -> u32 {
+        extend_instance(&env);
+        let queued_key = DataKey::QueuedAt(proposal_id);
+        env.storage().instance().get(&queued_key).unwrap_or(0)
     }
 }
 
@@ -474,6 +549,10 @@ mod test {
             li.sequence_number += 101;
         });
 
+        // Queue proposal first (with default delay=0, ready immediately)
+        client.queue_proposal(&0);
+
+        // Execute proposal
         client.execute_proposal(&0);
 
         let p = client.get_proposal(&0);
@@ -499,8 +578,8 @@ mod test {
         client.vote(&proposer, &0, &true);
         client.vote(&voter, &0, &true);
 
-        // Don't advance ledger
-        client.execute_proposal(&0);
+        // Don't advance ledger - should fail at queue_proposal
+        client.queue_proposal(&0);
     }
 
     #[test]
@@ -523,7 +602,8 @@ mod test {
             li.sequence_number += 101;
         });
 
-        client.execute_proposal(&0); // should panic
+        // Should fail at queue_proposal because proposal did not pass
+        client.queue_proposal(&0);
     }
 
     #[test]
@@ -552,5 +632,154 @@ mod test {
         // Non-existent param returns empty string
         let val = client.get_param(&String::from_str(&env, "nonexistent"));
         assert_eq!(val, String::from_str(&env, ""));
+    }
+
+    #[test]
+    fn test_timelock_zero_delay_executes_immediately() {
+        let (env, contract_id, _, proposer, voter) = setup_test();
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        // Default delay is 0
+        assert_eq!(client.get_timelock_delay(), 0);
+
+        let prop_id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "fee"),
+            &String::from_str(&env, "100"),
+        );
+
+        client.vote(&proposer, &prop_id, &true);
+        client.vote(&voter, &prop_id, &true);
+
+        env.ledger().with_mut(|li| {
+            li.sequence_number += 101;
+        });
+
+        // Queue and execute in same ledger with delay=0
+        client.queue_proposal(&prop_id);
+        client.execute_proposal(&prop_id);
+
+        let p = client.get_proposal(&prop_id);
+        assert!(p.executed);
+    }
+
+    #[test]
+    #[should_panic(expected = "proposal not queued")]
+    fn test_execute_without_queue_panics() {
+        let (env, contract_id, _, proposer, voter) = setup_test();
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        let prop_id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "fee"),
+            &String::from_str(&env, "100"),
+        );
+
+        client.vote(&proposer, &prop_id, &true);
+        client.vote(&voter, &prop_id, &true);
+
+        env.ledger().with_mut(|li| {
+            li.sequence_number += 101;
+        });
+
+        // Try to execute without queueing
+        client.execute_proposal(&prop_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "timelock not elapsed")]
+    fn test_execute_before_timelock_panics() {
+        let (env, contract_id, _, proposer, voter) = setup_test();
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        // Set 50 ledger delay
+        client.set_timelock_delay(&50);
+
+        let prop_id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "fee"),
+            &String::from_str(&env, "100"),
+        );
+
+        client.vote(&proposer, &prop_id, &true);
+        client.vote(&voter, &prop_id, &true);
+
+        env.ledger().with_mut(|li| {
+            li.sequence_number += 101;
+        });
+
+        client.queue_proposal(&prop_id);
+
+        // Try to execute before delay elapses (only advance 10 ledgers)
+        env.ledger().with_mut(|li| {
+            li.sequence_number += 10;
+        });
+
+        client.execute_proposal(&prop_id);
+    }
+
+    #[test]
+    fn test_timelock_full_flow() {
+        let (env, contract_id, _, proposer, voter) = setup_test();
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        // Set 50 ledger delay
+        client.set_timelock_delay(&50);
+        assert_eq!(client.get_timelock_delay(), 50);
+
+        let prop_id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "max_borrow"),
+            &String::from_str(&env, "5000"),
+        );
+
+        client.vote(&proposer, &prop_id, &true);
+        client.vote(&voter, &prop_id, &true);
+
+        // End voting at ledger 101
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 101;
+        });
+
+        // Queue at ledger 101 → ready at 151
+        client.queue_proposal(&prop_id);
+        assert_eq!(client.get_timelock_ready_ledger(&prop_id), 151);
+
+        // Advance to ledger 151
+        env.ledger().with_mut(|li| {
+            li.sequence_number = 151;
+        });
+
+        // Now execute should succeed
+        client.execute_proposal(&prop_id);
+
+        let p = client.get_proposal(&prop_id);
+        assert!(p.executed);
+
+        let val = client.get_param(&String::from_str(&env, "max_borrow"));
+        assert_eq!(val, String::from_str(&env, "5000"));
+    }
+
+    #[test]
+    #[should_panic(expected = "proposal already queued")]
+    fn test_double_queue_panics() {
+        let (env, contract_id, _, proposer, voter) = setup_test();
+        let client = GovernanceContractClient::new(&env, &contract_id);
+
+        let prop_id = client.create_proposal(
+            &proposer,
+            &String::from_str(&env, "fee"),
+            &String::from_str(&env, "100"),
+        );
+
+        client.vote(&proposer, &prop_id, &true);
+        client.vote(&voter, &prop_id, &true);
+
+        env.ledger().with_mut(|li| {
+            li.sequence_number += 101;
+        });
+
+        client.queue_proposal(&prop_id);
+        client.queue_proposal(&prop_id); // should panic
     }
 }

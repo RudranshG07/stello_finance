@@ -31,6 +31,10 @@ pub enum DataKey {
     TotalBorrowed,
     Collateral(Address),
     Borrowed(Address),
+    // Multi-asset collateral whitelist
+    AssetCf(Address),                  // asset → collateral factor bps (0 = not whitelisted)
+    AssetCollateral(Address, Address),  // (asset, user) → balance
+    AssetTotalCollateral(Address),      // asset → total across all users
 }
 
 // --- Storage helpers ---
@@ -481,6 +485,134 @@ impl LendingContract {
         let native_client = token::Client::new(&env, &native);
         native_client.balance(&env.current_contract_address())
     }
+
+    // ==========================================================
+    // Multi-asset collateral whitelist
+    // ==========================================================
+
+    /// Add an asset to the collateral whitelist with its collateral factor.
+    /// Only callable by admin. CF must be <= 90% (9000 bps).
+    pub fn add_collateral_asset(env: Env, asset: Address, cf_bps: u32) {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        assert!(cf_bps > 0 && cf_bps <= 9000, "collateral factor must be <= 90%");
+        extend_instance(&env);
+
+        let key = DataKey::AssetCf(asset.clone());
+        env.storage().instance().set(&key, &(cf_bps as i128));
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("add_cf"),),
+            (asset, cf_bps),
+        );
+    }
+
+    /// Remove an asset from the collateral whitelist. Only callable by admin.
+    pub fn remove_collateral_asset(env: Env, asset: Address) {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        extend_instance(&env);
+
+        let key = DataKey::AssetCf(asset.clone());
+        env.storage().instance().remove(&key);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("rm_cf"),),
+            asset,
+        );
+    }
+
+    /// Get collateral factor for an asset (0 = not whitelisted).
+    pub fn get_asset_cf(env: Env, asset: Address) -> i128 {
+        extend_instance(&env);
+        let key = DataKey::AssetCf(asset);
+        env.storage().instance().get(&key).unwrap_or(0)
+    }
+
+    /// Deposit whitelisted asset as collateral.
+    pub fn deposit_collateral_asset(env: Env, user: Address, asset: Address, amount: i128) {
+        user.require_auth();
+        assert!(amount > 0, "amount must be positive");
+        extend_instance(&env);
+
+        // Check asset is whitelisted
+        let cf = Self::get_asset_cf(env.clone(), asset.clone());
+        assert!(cf > 0, "asset not whitelisted as collateral");
+
+        // Transfer asset from user to contract
+        let asset_client = token::Client::new(&env, &asset);
+        asset_client.transfer(&user, &env.current_contract_address(), &amount);
+
+        // Update user balance
+        let key = DataKey::AssetCollateral(asset.clone(), user.clone());
+        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        env.storage().persistent().set(&key, &(current + amount));
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, USER_LIFETIME_THRESHOLD, USER_BUMP_AMOUNT);
+
+        // Update total
+        let total_key = DataKey::AssetTotalCollateral(asset.clone());
+        let total: i128 = env.storage().instance().get(&total_key).unwrap_or(0);
+        env.storage().instance().set(&total_key, &(total + amount));
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("dep_ast"),),
+            (user, asset, amount),
+        );
+    }
+
+    /// Withdraw whitelisted asset collateral.
+    pub fn withdraw_collateral_asset(env: Env, user: Address, asset: Address, amount: i128) {
+        user.require_auth();
+        assert!(amount > 0, "amount must be positive");
+        extend_instance(&env);
+
+        // Check user balance
+        let key = DataKey::AssetCollateral(asset.clone(), user.clone());
+        let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        assert!(current >= amount, "insufficient asset collateral");
+
+        // Update user balance
+        env.storage().persistent().set(&key, &(current - amount));
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, USER_LIFETIME_THRESHOLD, USER_BUMP_AMOUNT);
+
+        // Update total
+        let total_key = DataKey::AssetTotalCollateral(asset.clone());
+        let total: i128 = env.storage().instance().get(&total_key).unwrap_or(0);
+        env.storage().instance().set(&total_key, &(total - amount));
+
+        // Transfer asset back to user
+        let asset_client = token::Client::new(&env, &asset);
+        asset_client.transfer(&env.current_contract_address(), &user, &amount);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("wd_ast"),),
+            (user, asset, amount),
+        );
+    }
+
+    /// Get user's balance of a specific collateral asset.
+    pub fn get_asset_collateral_balance(env: Env, user: Address, asset: Address) -> i128 {
+        extend_instance(&env);
+        let key = DataKey::AssetCollateral(asset, user);
+        let val: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        if val > 0 {
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, USER_LIFETIME_THRESHOLD, USER_BUMP_AMOUNT);
+        }
+        val
+    }
+
+    /// Get total deposited across all users for a specific asset.
+    pub fn get_asset_total_collateral(env: Env, asset: Address) -> i128 {
+        extend_instance(&env);
+        let key = DataKey::AssetTotalCollateral(asset);
+        env.storage().instance().get(&key).unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -709,5 +841,88 @@ mod test {
         client.borrow(&user2, &2_000_000_000);
 
         assert_eq!(client.total_borrowed(), 5_000_000_000);
+    }
+
+    #[test]
+    fn test_add_collateral_asset_and_whitelist() {
+        let (env, contract_id, _, _, _, _, admin) = setup_test();
+        let client = LendingContractClient::new(&env, &contract_id);
+
+        // Create a new asset (e.g., USDC)
+        let usdc = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        // Not whitelisted initially
+        assert_eq!(client.get_asset_cf(&usdc), 0);
+
+        // Admin whitelists with 80% CF
+        client.add_collateral_asset(&usdc, &8000);
+
+        // Now whitelisted
+        assert_eq!(client.get_asset_cf(&usdc), 8000);
+    }
+
+    #[test]
+    fn test_deposit_and_withdraw_collateral_asset() {
+        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let client = LendingContractClient::new(&env, &contract_id);
+
+        // Create and whitelist USDC
+        let usdc = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        client.add_collateral_asset(&usdc, &8000);
+
+        // Mint USDC to user
+        StellarAssetClient::new(&env, &usdc).mint(&user, &1_000_0000000);
+
+        // Deposit 500 USDC
+        client.deposit_collateral_asset(&user, &usdc, &500_0000000);
+        assert_eq!(client.get_asset_collateral_balance(&user, &usdc), 500_0000000);
+        assert_eq!(client.get_asset_total_collateral(&usdc), 500_0000000);
+
+        // Withdraw 200 USDC
+        client.withdraw_collateral_asset(&user, &usdc, &200_0000000);
+        assert_eq!(client.get_asset_collateral_balance(&user, &usdc), 300_0000000);
+        assert_eq!(client.get_asset_total_collateral(&usdc), 300_0000000);
+    }
+
+    #[test]
+    #[should_panic(expected = "asset not whitelisted as collateral")]
+    fn test_deposit_non_whitelisted_asset_panics() {
+        let (env, contract_id, _, _, user, _, _) = setup_test();
+        let client = LendingContractClient::new(&env, &contract_id);
+
+        // Create asset but don't whitelist it
+        let random_token = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        StellarAssetClient::new(&env, &random_token).mint(&user, &1_000_0000000);
+
+        // Try to deposit — should panic
+        client.deposit_collateral_asset(&user, &random_token, &100_0000000);
+    }
+
+    #[test]
+    #[should_panic(expected = "collateral factor must be <= 90%")]
+    fn test_add_collateral_asset_rejects_excessive_cf() {
+        let (env, contract_id, _, _, _, _, _) = setup_test();
+        let client = LendingContractClient::new(&env, &contract_id);
+
+        let asset = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        // Try to set CF to 95% — should panic
+        client.add_collateral_asset(&asset, &9500);
+    }
+
+    #[test]
+    fn test_remove_collateral_asset() {
+        let (env, contract_id, _, _, _, _, _) = setup_test();
+        let client = LendingContractClient::new(&env, &contract_id);
+
+        let asset = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+
+        // Add asset
+        client.add_collateral_asset(&asset, &7500);
+        assert_eq!(client.get_asset_cf(&asset), 7500);
+
+        // Remove asset
+        client.remove_collateral_asset(&asset);
+        assert_eq!(client.get_asset_cf(&asset), 0);
     }
 }

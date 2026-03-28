@@ -115,7 +115,7 @@
                   "u64": 0
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -487,7 +487,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 100000000000
+                          "lo": 0
                         }
                       }
                     },
@@ -498,7 +498,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 50000000000
+                          "lo": 150000000000
                         }
                       }
                     }
@@ -1544,7 +1544,7 @@
                   "u64": 0
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -1626,7 +1626,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "bool": false
+                  "bool": true
                 },
                 {
                   "i128": {
@@ -1822,7 +1822,7 @@
                 "bytes": "0000000000000000000000000000000000000000000000000000000000000006"
               },
               {
-                "symbol": "queue_proposal"
+                "symbol": "execute_proposal"
               }
             ],
             "data": {
@@ -1848,7 +1848,7 @@
             "data": {
               "vec": [
                 {
-                  "string": "caught panic 'proposal did not pass' from contract function 'Symbol(obj#495)'"
+                  "string": "caught panic 'proposal not queued' from contract function 'Symbol(obj#495)'"
                 },
                 {
                   "u64": 0
@@ -1908,7 +1908,7 @@
                   "string": "contract call failed"
                 },
                 {
-                  "symbol": "queue_proposal"
+                  "symbol": "execute_proposal"
                 },
                 {
                   "vec": [
