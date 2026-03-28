@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
+import helmet from "@fastify/helmet";
 import { config } from "../config/index.js";
 import { StakingEngine } from "../staking-engine/index.js";
 import { RewardEngine } from "../reward-engine/index.js";
@@ -38,6 +39,21 @@ export async function startApiGateway(deps: GatewayDeps) {
   });
 
   await fastify.register(cors, { origin: true });
+  await fastify.register(helmet, {
+    // Content-Security-Policy tailored for a JSON API — no scripts or frames needed
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+      },
+    },
+    // HSTS: force HTTPS for 1 year including subdomains
+    hsts: {
+      maxAge: 31_536_000,
+      includeSubDomains: true,
+      preload: true,
+    },
+  });
   await fastify.register(rateLimit, {
     max: 200,
     timeWindow: "1 minute",
