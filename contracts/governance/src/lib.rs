@@ -7,9 +7,9 @@ const MIN_PROPOSAL_BALANCE: i128 = 100_0000000; // 100 sXLM minimum to create pr
 
 // ---------- TTL constants ----------
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400;        // bump to ~30 days
+const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
 const PROPOSAL_LIFETIME_THRESHOLD: u32 = 518_400; // ~30 days
-const PROPOSAL_BUMP_AMOUNT: u32 = 3_110_400;      // bump to ~180 days
+const PROPOSAL_BUMP_AMOUNT: u32 = 3_110_400; // bump to ~180 days
 
 #[derive(Clone)]
 #[contracttype]
@@ -53,18 +53,22 @@ fn extend_instance(env: &Env) {
 fn extend_proposal(env: &Env, id: u64) {
     let key = DataKey::Proposal(id);
     if env.storage().persistent().has(&key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PROPOSAL_LIFETIME_THRESHOLD,
+            PROPOSAL_BUMP_AMOUNT,
+        );
     }
 }
 
 fn extend_vote(env: &Env, proposal_id: u64, voter: &Address) {
     let key = DataKey::Vote(proposal_id, voter.clone());
     if env.storage().persistent().has(&key) {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PROPOSAL_LIFETIME_THRESHOLD,
+            PROPOSAL_BUMP_AMOUNT,
+        );
     }
 }
 
@@ -124,9 +128,11 @@ fn has_voted(env: &Env, proposal_id: u64, voter: &Address) -> bool {
     let key = DataKey::Vote(proposal_id, voter.clone());
     let val: bool = env.storage().persistent().get(&key).unwrap_or(false);
     if val {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PROPOSAL_LIFETIME_THRESHOLD,
+            PROPOSAL_BUMP_AMOUNT,
+        );
     }
     val
 }
@@ -152,17 +158,29 @@ impl GovernanceContract {
         voting_period_ledgers: u32,
         quorum_bps: u32,
     ) {
-        let already: bool = env.storage().instance().get(&DataKey::Initialized).unwrap_or(false);
+        let already: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Initialized)
+            .unwrap_or(false);
         if already {
             panic!("already initialized");
         }
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::SxlmToken, &sxlm_token);
-        env.storage().instance().set(&DataKey::VotingPeriodLedgers, &voting_period_ledgers);
-        env.storage().instance().set(&DataKey::QuorumBps, &(quorum_bps as i128));
+        env.storage()
+            .instance()
+            .set(&DataKey::SxlmToken, &sxlm_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::VotingPeriodLedgers, &voting_period_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::QuorumBps, &(quorum_bps as i128));
         // Default reference supply: 0 means quorum check uses absolute minimum
-        env.storage().instance().set(&DataKey::ReferenceSupply, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReferenceSupply, &0i128);
         extend_instance(&env);
     }
 
@@ -184,7 +202,9 @@ impl GovernanceContract {
         admin.require_auth();
         assert!(supply >= 0, "supply must be non-negative");
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::ReferenceSupply, &supply);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReferenceSupply, &supply);
     }
 
     /// Create a new governance proposal. Proposer must hold minimum sXLM balance.
@@ -247,10 +267,7 @@ impl GovernanceContract {
         );
 
         // Check not already voted
-        assert!(
-            !has_voted(&env, proposal_id, &voter),
-            "already voted"
-        );
+        assert!(!has_voted(&env, proposal_id, &voter), "already voted");
 
         // Get voter's sXLM balance as vote weight
         let sxlm = read_sxlm_token(&env);
@@ -293,7 +310,9 @@ impl GovernanceContract {
         assert!(total_votes > 0, "no votes cast");
 
         let quorum_bps = read_quorum_bps(&env);
-        let reference_supply: i128 = env.storage().instance()
+        let reference_supply: i128 = env
+            .storage()
+            .instance()
             .get(&DataKey::ReferenceSupply)
             .unwrap_or(0);
 
@@ -310,13 +329,14 @@ impl GovernanceContract {
 
         // Store the approved parameter value on-chain
         let param_key = DataKey::Param(proposal.param_key.clone());
-        env.storage().persistent().set(
-            &param_key,
-            &proposal.new_value,
-        );
         env.storage()
             .persistent()
-            .extend_ttl(&param_key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+            .set(&param_key, &proposal.new_value);
+        env.storage().persistent().extend_ttl(
+            &param_key,
+            PROPOSAL_LIFETIME_THRESHOLD,
+            PROPOSAL_BUMP_AMOUNT,
+        );
 
         proposal.executed = true;
         write_proposal(&env, &proposal);
@@ -352,15 +372,18 @@ impl GovernanceContract {
     pub fn get_param(env: Env, key: String) -> String {
         extend_instance(&env);
         let param_key = DataKey::Param(key);
-        let val: String = env.storage()
+        let val: String = env
+            .storage()
             .persistent()
             .get(&param_key)
             .unwrap_or(String::from_str(&env, ""));
         // Extend TTL if it exists
         if env.storage().persistent().has(&param_key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&param_key, PROPOSAL_LIFETIME_THRESHOLD, PROPOSAL_BUMP_AMOUNT);
+            env.storage().persistent().extend_ttl(
+                &param_key,
+                PROPOSAL_LIFETIME_THRESHOLD,
+                PROPOSAL_BUMP_AMOUNT,
+            );
         }
         val
     }
@@ -380,7 +403,9 @@ mod test {
         let proposer = Address::generate(&env);
         let voter = Address::generate(&env);
 
-        let sxlm_id = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
         let contract_id = env.register_contract(None, GovernanceContract);
 
         let client = GovernanceContractClient::new(&env, &contract_id);

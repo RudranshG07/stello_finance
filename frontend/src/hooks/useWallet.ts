@@ -188,7 +188,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         return signedXdr;
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : 'Failed to sign transaction';
-        throw new Error(message);
+        throw new Error(message, { cause: err });
       }
     },
     []

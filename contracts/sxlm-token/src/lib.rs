@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, BytesN, Env, String,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, String};
 use soroban_token_sdk::TokenUtils;
 
 // ---------- TTL constants ----------
@@ -10,9 +8,9 @@ use soroban_token_sdk::TokenUtils;
 // 30 days  ≈  518_400 ledgers
 // 180 days ≈ 3_110_400 ledgers (near testnet max)
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days  — extend if below this
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400;        // bump to ~30 days
-const BALANCE_LIFETIME_THRESHOLD: u32 = 518_400;  // ~30 days — extend persistent if below this
-const BALANCE_BUMP_AMOUNT: u32 = 3_110_400;       // bump to ~180 days
+const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
+const BALANCE_LIFETIME_THRESHOLD: u32 = 518_400; // ~30 days — extend persistent if below this
+const BALANCE_BUMP_AMOUNT: u32 = 3_110_400; // bump to ~180 days
 
 #[derive(Clone)]
 #[contracttype]
@@ -62,9 +60,11 @@ fn read_balance(env: &Env, addr: &Address) -> i128 {
     let val: i128 = env.storage().persistent().get(&key).unwrap_or(0);
     // Extend TTL whenever we read a balance that exists
     if val > 0 {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, BALANCE_LIFETIME_THRESHOLD, BALANCE_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            BALANCE_LIFETIME_THRESHOLD,
+            BALANCE_BUMP_AMOUNT,
+        );
     }
     val
 }
@@ -130,7 +130,14 @@ impl SxlmToken {
     /// Initialize the sXLM token contract.
     /// `admin`  - protocol admin address
     /// `minter` - the staking contract address (only address allowed to mint/burn)
-    pub fn initialize(env: Env, admin: Address, minter: Address, decimals: u32, name: String, symbol: String) {
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        minter: Address,
+        decimals: u32,
+        name: String,
+        symbol: String,
+    ) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
@@ -200,7 +207,13 @@ impl SxlmToken {
         read_allowance(&env, &from, &spender)
     }
 
-    pub fn approve(env: Env, from: Address, spender: Address, amount: i128, _expiration_ledger: u32) {
+    pub fn approve(
+        env: Env,
+        from: Address,
+        spender: Address,
+        amount: i128,
+        _expiration_ledger: u32,
+    ) {
         from.require_auth();
         check_nonnegative(amount);
         extend_instance(&env);

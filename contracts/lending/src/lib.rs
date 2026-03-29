@@ -11,9 +11,9 @@ const DEFAULT_LIQUIDATION_BONUS_BPS: i128 = 500; // 5% bonus
 // 30 days  ≈  518_400 ledgers
 // 180 days ≈ 3_110_400 ledgers
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400;        // bump to ~30 days
-const USER_LIFETIME_THRESHOLD: u32 = 518_400;     // ~30 days
-const USER_BUMP_AMOUNT: u32 = 3_110_400;          // bump to ~180 days
+const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
+const USER_LIFETIME_THRESHOLD: u32 = 518_400; // ~30 days
+const USER_BUMP_AMOUNT: u32 = 3_110_400; // bump to ~180 days
 
 #[derive(Clone)]
 #[contracttype]
@@ -144,7 +144,12 @@ fn write_user_borrowed(env: &Env, user: &Address, val: i128) {
 
 /// Health Factor = (collateral × exchange_rate × collateral_factor_bps) / (BPS × RATE_PRECISION × borrowed)
 /// Returns HF scaled by RATE_PRECISION (so 1.0 = RATE_PRECISION)
-fn compute_health_factor(collateral: i128, borrowed: i128, cf_bps: i128, exchange_rate: i128) -> i128 {
+fn compute_health_factor(
+    collateral: i128,
+    borrowed: i128,
+    cf_bps: i128,
+    exchange_rate: i128,
+) -> i128 {
     if borrowed == 0 {
         return i128::MAX; // No debt = infinite health
     }
@@ -168,19 +173,40 @@ impl LendingContract {
         liquidation_threshold_bps: u32,
         borrow_rate_bps: u32,
     ) {
-        let already: bool = env.storage().instance().get(&DataKey::Initialized).unwrap_or(false);
+        let already: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Initialized)
+            .unwrap_or(false);
         if already {
             panic!("already initialized");
         }
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::SxlmToken, &sxlm_token);
-        env.storage().instance().set(&DataKey::NativeToken, &native_token);
-        env.storage().instance().set(&DataKey::CollateralFactorBps, &(collateral_factor_bps as i128));
-        env.storage().instance().set(&DataKey::LiquidationThresholdBps, &(liquidation_threshold_bps as i128));
-        env.storage().instance().set(&DataKey::BorrowRateBps, &(borrow_rate_bps as i128));
-        env.storage().instance().set(&DataKey::LiquidationBonusBps, &DEFAULT_LIQUIDATION_BONUS_BPS);
-        env.storage().instance().set(&DataKey::ExchangeRate, &RATE_PRECISION); // 1:1 initial
+        env.storage()
+            .instance()
+            .set(&DataKey::SxlmToken, &sxlm_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::NativeToken, &native_token);
+        env.storage().instance().set(
+            &DataKey::CollateralFactorBps,
+            &(collateral_factor_bps as i128),
+        );
+        env.storage().instance().set(
+            &DataKey::LiquidationThresholdBps,
+            &(liquidation_threshold_bps as i128),
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::BorrowRateBps, &(borrow_rate_bps as i128));
+        env.storage().instance().set(
+            &DataKey::LiquidationBonusBps,
+            &DEFAULT_LIQUIDATION_BONUS_BPS,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::ExchangeRate, &RATE_PRECISION); // 1:1 initial
         extend_instance(&env);
     }
 
@@ -208,33 +234,39 @@ impl LendingContract {
         extend_instance(&env);
         env.storage().instance().set(&DataKey::ExchangeRate, &rate);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("er_upd"),),
-            rate,
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("er_upd"),), rate);
     }
 
     /// Update the collateral factor. Only callable by admin.
     pub fn update_collateral_factor(env: Env, new_cf_bps: u32) {
         let admin = read_admin(&env);
         admin.require_auth();
-        assert!(new_cf_bps > 0 && new_cf_bps <= 10000, "invalid collateral factor");
-        extend_instance(&env);
-        env.storage().instance().set(&DataKey::CollateralFactorBps, &(new_cf_bps as i128));
-
-        env.events().publish(
-            (soroban_sdk::symbol_short!("cf_upd"),),
-            new_cf_bps,
+        assert!(
+            new_cf_bps > 0 && new_cf_bps <= 10000,
+            "invalid collateral factor"
         );
+        extend_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::CollateralFactorBps, &(new_cf_bps as i128));
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("cf_upd"),), new_cf_bps);
     }
 
     /// Update the liquidation threshold. Only callable by admin.
     pub fn update_liquidation_threshold(env: Env, new_lt_bps: u32) {
         let admin = read_admin(&env);
         admin.require_auth();
-        assert!(new_lt_bps > 0 && new_lt_bps <= 10000, "invalid liquidation threshold");
+        assert!(
+            new_lt_bps > 0 && new_lt_bps <= 10000,
+            "invalid liquidation threshold"
+        );
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::LiquidationThresholdBps, &(new_lt_bps as i128));
+        env.storage()
+            .instance()
+            .set(&DataKey::LiquidationThresholdBps, &(new_lt_bps as i128));
     }
 
     /// Update the borrow rate. Only callable by admin.
@@ -242,7 +274,9 @@ impl LendingContract {
         let admin = read_admin(&env);
         admin.require_auth();
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::BorrowRateBps, &(new_rate_bps as i128));
+        env.storage()
+            .instance()
+            .set(&DataKey::BorrowRateBps, &(new_rate_bps as i128));
     }
 
     // ==========================================================
@@ -287,7 +321,10 @@ impl LendingContract {
 
         if borrowed > 0 {
             let hf = compute_health_factor(new_collateral, borrowed, cf_bps, er);
-            assert!(hf >= RATE_PRECISION, "withdrawal would make position unhealthy");
+            assert!(
+                hf >= RATE_PRECISION,
+                "withdrawal would make position unhealthy"
+            );
         }
 
         write_user_collateral(&env, &user, new_collateral);
@@ -319,7 +356,10 @@ impl LendingContract {
 
         // max_borrow = collateral * exchange_rate * cf_bps / (BPS_DENOMINATOR * RATE_PRECISION)
         let max_borrow = collateral * er * cf_bps / (BPS_DENOMINATOR * RATE_PRECISION);
-        assert!(new_borrowed <= max_borrow, "borrow exceeds collateral limit");
+        assert!(
+            new_borrowed <= max_borrow,
+            "borrow exceeds collateral limit"
+        );
 
         write_user_borrowed(&env, &user, new_borrowed);
 
@@ -335,10 +375,8 @@ impl LendingContract {
 
         native_client.transfer(&env.current_contract_address(), &user, &xlm_amount);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("borrow"),),
-            (user, xlm_amount),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("borrow"),), (user, xlm_amount));
     }
 
     /// Repay borrowed XLM.
@@ -348,7 +386,11 @@ impl LendingContract {
         extend_instance(&env);
 
         let borrowed = read_user_borrowed(&env, &user);
-        let repay_amount = if xlm_amount > borrowed { borrowed } else { xlm_amount };
+        let repay_amount = if xlm_amount > borrowed {
+            borrowed
+        } else {
+            xlm_amount
+        };
 
         let native = read_native_token(&env);
         let native_client = token::Client::new(&env, &native);
@@ -359,10 +401,8 @@ impl LendingContract {
         let total = read_i128(&env, &DataKey::TotalBorrowed);
         write_i128(&env, &DataKey::TotalBorrowed, total - repay_amount);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("repay"),),
-            (user, repay_amount),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("repay"),), (user, repay_amount));
     }
 
     /// Liquidate an unhealthy position. Liquidator repays debt and receives collateral + bonus.
@@ -398,13 +438,21 @@ impl LendingContract {
 
         let sxlm = read_sxlm_token(&env);
         let sxlm_client = token::Client::new(&env, &sxlm);
-        sxlm_client.transfer(&env.current_contract_address(), &liquidator, &collateral_to_send);
+        sxlm_client.transfer(
+            &env.current_contract_address(),
+            &liquidator,
+            &collateral_to_send,
+        );
 
         // Clear borrower position
         let remaining_collateral = collateral - collateral_to_send;
         let total_collateral = read_i128(&env, &DataKey::TotalCollateral);
         // Only subtract the seized amount; remaining_collateral stays in contract attributed to borrower
-        write_i128(&env, &DataKey::TotalCollateral, total_collateral - collateral_to_send);
+        write_i128(
+            &env,
+            &DataKey::TotalCollateral,
+            total_collateral - collateral_to_send,
+        );
         let total_borrowed = read_i128(&env, &DataKey::TotalBorrowed);
         write_i128(&env, &DataKey::TotalBorrowed, total_borrowed - borrowed);
 
@@ -498,8 +546,12 @@ mod test {
         let liquidator = Address::generate(&env);
 
         let sxlm_token_admin = Address::generate(&env);
-        let sxlm_id = env.register_stellar_asset_contract_v2(sxlm_token_admin.clone()).address();
-        let native_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(sxlm_token_admin.clone())
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
 
         let contract_id = env.register_contract(None, LendingContract);
 
@@ -516,7 +568,15 @@ mod test {
         native_admin_client.mint(&contract_id, &500_000_0000000); // Fund pool with XLM
         native_admin_client.mint(&liquidator, &100_000_0000000);
 
-        (env, contract_id, sxlm_id, native_id, user, liquidator, admin)
+        (
+            env,
+            contract_id,
+            sxlm_id,
+            native_id,
+            user,
+            liquidator,
+            admin,
+        )
     }
 
     #[test]
@@ -658,9 +718,20 @@ mod test {
         // Create a separate contract with low liquidation threshold for testing
         let contract2 = env.register_contract(None, LendingContract);
         let client2 = LendingContractClient::new(&env, &contract2);
-        let sxlm2 = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
-        let native2 = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
-        client2.initialize(&Address::generate(&env), &sxlm2, &native2, &7000, &5000, &500);
+        let sxlm2 = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let native2 = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        client2.initialize(
+            &Address::generate(&env),
+            &sxlm2,
+            &native2,
+            &7000,
+            &5000,
+            &500,
+        );
 
         let u = Address::generate(&env);
         let liq = Address::generate(&env);

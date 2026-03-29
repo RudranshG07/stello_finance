@@ -8,9 +8,9 @@ const PRECISION: i128 = 1_000_000_000_000;
 
 // ---------- TTL constants ----------
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400;        // bump to ~30 days
-const LP_LIFETIME_THRESHOLD: u32 = 518_400;       // ~30 days
-const LP_BUMP_AMOUNT: u32 = 3_110_400;            // bump to ~180 days
+const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
+const LP_LIFETIME_THRESHOLD: u32 = 518_400; // ~30 days
+const LP_BUMP_AMOUNT: u32 = 3_110_400; // bump to ~180 days
 
 #[derive(Clone)]
 #[contracttype]
@@ -82,10 +82,7 @@ fn read_native_token(env: &Env) -> Address {
 }
 
 fn read_fee_bps(env: &Env) -> i128 {
-    env.storage()
-        .instance()
-        .get(&DataKey::FeeBps)
-        .unwrap_or(30) // 0.3%
+    env.storage().instance().get(&DataKey::FeeBps).unwrap_or(30) // 0.3%
 }
 
 fn read_admin(env: &Env) -> Address {
@@ -165,7 +162,11 @@ fn update_pool(env: &Env) {
     if now <= last || last >= program.end_time {
         return;
     }
-    let effective_now = if now > program.end_time { program.end_time } else { now };
+    let effective_now = if now > program.end_time {
+        program.end_time
+    } else {
+        now
+    };
     let elapsed = (effective_now - last) as i128;
 
     let total_lp = read_i128(env, &DataKey::TotalLpSupply);
@@ -180,7 +181,11 @@ fn update_pool(env: &Env) {
     // Rewards for this window, capped at remaining budget
     let remaining = program.total_rewards - program.distributed_rewards;
     let raw_reward = program.reward_per_second * elapsed;
-    let reward = if raw_reward > remaining { remaining } else { raw_reward };
+    let reward = if raw_reward > remaining {
+        remaining
+    } else {
+        raw_reward
+    };
 
     if reward <= 0 {
         env.storage()
@@ -235,7 +240,11 @@ fn projected_acc(env: &Env) -> i128 {
     if now <= last || last >= program.end_time {
         return acc;
     }
-    let effective_now = if now > program.end_time { program.end_time } else { now };
+    let effective_now = if now > program.end_time {
+        program.end_time
+    } else {
+        now
+    };
     let elapsed = (effective_now - last) as i128;
 
     let total_lp = read_i128(env, &DataKey::TotalLpSupply);
@@ -245,7 +254,11 @@ fn projected_acc(env: &Env) -> i128 {
 
     let remaining = program.total_rewards - program.distributed_rewards;
     let raw_reward = program.reward_per_second * elapsed;
-    let reward = if raw_reward > remaining { remaining } else { raw_reward };
+    let reward = if raw_reward > remaining {
+        remaining
+    } else {
+        raw_reward
+    };
 
     if reward <= 0 {
         return acc;
@@ -267,15 +280,25 @@ impl LpPoolContract {
         native_token: Address,
         fee_bps: u32,
     ) {
-        let already: bool = env.storage().instance().get(&DataKey::Initialized).unwrap_or(false);
+        let already: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Initialized)
+            .unwrap_or(false);
         if already {
             panic!("already initialized");
         }
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::SxlmToken, &sxlm_token);
-        env.storage().instance().set(&DataKey::NativeToken, &native_token);
-        env.storage().instance().set(&DataKey::FeeBps, &(fee_bps as i128));
+        env.storage()
+            .instance()
+            .set(&DataKey::SxlmToken, &sxlm_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::NativeToken, &native_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeBps, &(fee_bps as i128));
         write_i128(&env, &DataKey::ProtocolFeeBps, 5); // 0.05% of swap input
         write_i128(&env, &DataKey::AccruedProtocolFees, 0);
         extend_instance(&env);
@@ -311,7 +334,10 @@ impl LpPoolContract {
         let admin = read_admin(&env);
         admin.require_auth();
         assert!(end_time > start_time, "end_time must be after start_time");
-        assert!(reward_per_second > 0 && total_rewards > 0, "invalid reward params");
+        assert!(
+            reward_per_second > 0 && total_rewards > 0,
+            "invalid reward params"
+        );
         extend_instance(&env);
 
         // Settle any outstanding rewards under the old program first
@@ -325,10 +351,16 @@ impl LpPoolContract {
             start_time,
             end_time,
         };
-        env.storage().instance().set(&DataKey::MiningProgram, &program);
-        env.storage().instance().set(&DataKey::LastRewardTime, &start_time);
+        env.storage()
+            .instance()
+            .set(&DataKey::MiningProgram, &program);
+        env.storage()
+            .instance()
+            .set(&DataKey::LastRewardTime, &start_time);
         // Reset accumulator for the new program
-        env.storage().instance().set(&DataKey::AccRewardsPerShare, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::AccRewardsPerShare, &0i128);
     }
 
     /// View: how many reward tokens has `user` accumulated but not yet claimed?
@@ -341,7 +373,11 @@ impl LpPoolContract {
         let acc = projected_acc(&env);
         let debt = read_reward_debt(&env, &user);
         let pending = lp * acc / PRECISION - debt;
-        if pending < 0 { 0 } else { pending }
+        if pending < 0 {
+            0
+        } else {
+            pending
+        }
     }
 
     /// Claim all pending rewards for `user`. Transfers reward tokens to the user.
@@ -358,7 +394,11 @@ impl LpPoolContract {
             .get(&DataKey::AccRewardsPerShare)
             .unwrap_or(0);
         let debt = read_reward_debt(&env, &user);
-        let earned = if lp > 0 { lp * acc / PRECISION - debt } else { 0 };
+        let earned = if lp > 0 {
+            lp * acc / PRECISION - debt
+        } else {
+            0
+        };
 
         if earned <= 0 {
             // Still update debt to current accumulator
@@ -372,16 +412,17 @@ impl LpPoolContract {
             .get(&DataKey::MiningProgram)
             .expect("no mining program");
 
-        token::Client::new(&env, &program.reward_asset)
-            .transfer(&env.current_contract_address(), &user, &earned);
+        token::Client::new(&env, &program.reward_asset).transfer(
+            &env.current_contract_address(),
+            &user,
+            &earned,
+        );
 
         // Reset debt
         write_reward_debt(&env, &user, lp * acc / PRECISION);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("rewards"),),
-            (user, earned),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("rewards"),), (user, earned));
 
         earned
     }
@@ -393,7 +434,10 @@ impl LpPoolContract {
     /// Add liquidity to the pool. Returns LP tokens minted.
     pub fn add_liquidity(env: Env, user: Address, xlm_amount: i128, sxlm_amount: i128) -> i128 {
         user.require_auth();
-        assert!(xlm_amount > 0 && sxlm_amount > 0, "amounts must be positive");
+        assert!(
+            xlm_amount > 0 && sxlm_amount > 0,
+            "amounts must be positive"
+        );
         extend_instance(&env);
 
         // Settle rewards BEFORE changing LP balance
@@ -421,8 +465,16 @@ impl LpPoolContract {
 
         let native = read_native_token(&env);
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &native).transfer(&user, &env.current_contract_address(), &actual_xlm);
-        token::Client::new(&env, &sxlm).transfer(&user, &env.current_contract_address(), &actual_sxlm);
+        token::Client::new(&env, &native).transfer(
+            &user,
+            &env.current_contract_address(),
+            &actual_xlm,
+        );
+        token::Client::new(&env, &sxlm).transfer(
+            &user,
+            &env.current_contract_address(),
+            &actual_sxlm,
+        );
 
         write_i128(&env, &DataKey::ReserveXlm, reserve_xlm + actual_xlm);
         write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm + actual_sxlm);
@@ -472,8 +524,11 @@ impl LpPoolContract {
             let program_opt: Option<MiningProgramData> =
                 env.storage().instance().get(&DataKey::MiningProgram);
             if let Some(program) = program_opt {
-                token::Client::new(&env, &program.reward_asset)
-                    .transfer(&env.current_contract_address(), &user, &earned);
+                token::Client::new(&env, &program.reward_asset).transfer(
+                    &env.current_contract_address(),
+                    &user,
+                    &earned,
+                );
                 env.events().publish(
                     (soroban_sdk::symbol_short!("rewards"),),
                     (user.clone(), earned),
@@ -501,7 +556,11 @@ impl LpPoolContract {
 
         let native = read_native_token(&env);
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &native).transfer(&env.current_contract_address(), &user, &xlm_out);
+        token::Client::new(&env, &native).transfer(
+            &env.current_contract_address(),
+            &user,
+            &xlm_out,
+        );
         token::Client::new(&env, &sxlm).transfer(&env.current_contract_address(), &user, &sxlm_out);
 
         env.events().publish(
@@ -529,20 +588,32 @@ impl LpPoolContract {
         let reserve_sxlm = read_i128(&env, &DataKey::ReserveSxlm);
         assert!(reserve_xlm > 0 && reserve_sxlm > 0, "pool has no liquidity");
 
-        let sxlm_out = reserve_sxlm - (reserve_xlm * reserve_sxlm) / (reserve_xlm + amount_after_fee);
-        assert!(sxlm_out > 0 && sxlm_out < reserve_sxlm, "insufficient liquidity");
+        let sxlm_out =
+            reserve_sxlm - (reserve_xlm * reserve_sxlm) / (reserve_xlm + amount_after_fee);
+        assert!(
+            sxlm_out > 0 && sxlm_out < reserve_sxlm,
+            "insufficient liquidity"
+        );
         assert!(sxlm_out >= min_out, "slippage: output below minimum");
 
         let native = read_native_token(&env);
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &native).transfer(&user, &env.current_contract_address(), &xlm_amount);
+        token::Client::new(&env, &native).transfer(
+            &user,
+            &env.current_contract_address(),
+            &xlm_amount,
+        );
         token::Client::new(&env, &sxlm).transfer(&env.current_contract_address(), &user, &sxlm_out);
 
         let total_fee = xlm_amount - amount_after_fee;
         let protocol_fee_bps = read_i128(&env, &DataKey::ProtocolFeeBps);
         let protocol_cut = total_fee * protocol_fee_bps / fee_bps;
 
-        write_i128(&env, &DataKey::ReserveXlm, reserve_xlm + xlm_amount - protocol_cut);
+        write_i128(
+            &env,
+            &DataKey::ReserveXlm,
+            reserve_xlm + xlm_amount - protocol_cut,
+        );
         write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm - sxlm_out);
 
         let accrued = read_i128(&env, &DataKey::AccruedProtocolFees);
@@ -569,14 +640,26 @@ impl LpPoolContract {
         let reserve_sxlm = read_i128(&env, &DataKey::ReserveSxlm);
         assert!(reserve_xlm > 0 && reserve_sxlm > 0, "pool has no liquidity");
 
-        let xlm_out = reserve_xlm - (reserve_xlm * reserve_sxlm) / (reserve_sxlm + amount_after_fee);
-        assert!(xlm_out > 0 && xlm_out < reserve_xlm, "insufficient liquidity");
+        let xlm_out =
+            reserve_xlm - (reserve_xlm * reserve_sxlm) / (reserve_sxlm + amount_after_fee);
+        assert!(
+            xlm_out > 0 && xlm_out < reserve_xlm,
+            "insufficient liquidity"
+        );
         assert!(xlm_out >= min_out, "slippage: output below minimum");
 
         let native = read_native_token(&env);
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &sxlm).transfer(&user, &env.current_contract_address(), &sxlm_amount);
-        token::Client::new(&env, &native).transfer(&env.current_contract_address(), &user, &xlm_out);
+        token::Client::new(&env, &sxlm).transfer(
+            &user,
+            &env.current_contract_address(),
+            &sxlm_amount,
+        );
+        token::Client::new(&env, &native).transfer(
+            &env.current_contract_address(),
+            &user,
+            &xlm_out,
+        );
 
         write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm + sxlm_amount);
         write_i128(&env, &DataKey::ReserveXlm, reserve_xlm - xlm_out);
@@ -605,14 +688,16 @@ impl LpPoolContract {
         }
 
         let native = read_native_token(&env);
-        token::Client::new(&env, &native).transfer(&env.current_contract_address(), &admin, &accrued);
+        token::Client::new(&env, &native).transfer(
+            &env.current_contract_address(),
+            &admin,
+            &accrued,
+        );
 
         write_i128(&env, &DataKey::AccruedProtocolFees, 0);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("pf_col"),),
-            (admin, accrued),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("pf_col"),), (admin, accrued));
 
         accrued
     }
@@ -680,8 +765,12 @@ mod test {
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
 
-        let sxlm_id = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
-        let native_id = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
 
         let contract_id = env.register_contract(None, LpPoolContract);
         let client = LpPoolContractClient::new(&env, &contract_id);
