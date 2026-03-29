@@ -31,9 +31,10 @@ TOKEN_WASM="$SCRIPT_DIR/target/wasm32v1-none/release/sxlm_token.wasm"
 STAKING_WASM="$SCRIPT_DIR/target/wasm32v1-none/release/sxlm_staking.wasm"
 LENDING_WASM="$SCRIPT_DIR/target/wasm32v1-none/release/sxlm_lending.wasm"
 LP_POOL_WASM="$SCRIPT_DIR/target/wasm32v1-none/release/sxlm_lp_pool.wasm"
+TIMELOCK_WASM="$SCRIPT_DIR/target/wasm32v1-none/release/sxlm_timelock.wasm"
 GOVERNANCE_WASM="$SCRIPT_DIR/target/wasm32v1-none/release/sxlm_governance.wasm"
 
-for wasm in "$TOKEN_WASM" "$STAKING_WASM" "$LENDING_WASM" "$LP_POOL_WASM" "$GOVERNANCE_WASM"; do
+for wasm in "$TOKEN_WASM" "$STAKING_WASM" "$LENDING_WASM" "$LP_POOL_WASM" "$TIMELOCK_WASM" "$GOVERNANCE_WASM"; do
   if [ ! -f "$wasm" ]; then
     echo "ERROR: WASM not found at $wasm"
     exit 1
@@ -91,9 +92,21 @@ LP_POOL_CONTRACT_ID=$(stellar contract deploy \
 echo "  LP Pool Contract ID: $LP_POOL_CONTRACT_ID"
 
 # ---------------------------------------------------------------------------
-# Step 6: Deploy Governance contract
+# Step 6: Deploy Timelock contract
 # ---------------------------------------------------------------------------
-echo "[6/10] Deploying Governance contract..."
+echo "[6/10] Deploying Timelock contract..."
+TIMELOCK_CONTRACT_ID=$(stellar contract deploy \
+  --wasm "$TIMELOCK_WASM" \
+  --source "$ACCOUNT" \
+  --network "$NETWORK" \
+  2>&1)
+
+echo "  Timelock Contract ID: $TIMELOCK_CONTRACT_ID"
+
+# ---------------------------------------------------------------------------
+# Step 7: Deploy Governance contract
+# ---------------------------------------------------------------------------
+echo "[7/10] Deploying Governance contract..."
 GOVERNANCE_CONTRACT_ID=$(stellar contract deploy \
   --wasm "$GOVERNANCE_WASM" \
   --source "$ACCOUNT" \
@@ -103,9 +116,9 @@ GOVERNANCE_CONTRACT_ID=$(stellar contract deploy \
 echo "  Governance Contract ID: $GOVERNANCE_CONTRACT_ID"
 
 # ---------------------------------------------------------------------------
-# Step 7: Get the native XLM SAC address
+# Step 8: Get the native XLM SAC address
 # ---------------------------------------------------------------------------
-echo "[7/10] Resolving native XLM token (SAC) address..."
+echo "[8/10] Resolving native XLM token (SAC) address..."
 NATIVE_TOKEN_ID=$(stellar contract id asset \
   --asset native \
   --network "$NETWORK" \
@@ -114,7 +127,7 @@ NATIVE_TOKEN_ID=$(stellar contract id asset \
 echo "  Native XLM Token ID: $NATIVE_TOKEN_ID"
 
 # ---------------------------------------------------------------------------
-# Step 8: Get admin public key
+# Step 9: Get admin public key
 # ---------------------------------------------------------------------------
 ADMIN_PUB_KEY=$(stellar keys address "$ACCOUNT" 2>&1 || echo "")
 
@@ -126,10 +139,10 @@ fi
 echo "  Admin public key: $ADMIN_PUB_KEY"
 
 # ---------------------------------------------------------------------------
-# Step 9: Initialize contracts
+# Step 10: Initialize contracts
 # ---------------------------------------------------------------------------
 echo ""
-echo "[8/10] Initializing sXLM Token contract..."
+echo "[9/10] Initializing sXLM Token contract..."
 stellar contract invoke \
   --id "$TOKEN_CONTRACT_ID" \
   --source "$ACCOUNT" \
@@ -143,7 +156,7 @@ stellar contract invoke \
 
 echo "  Token initialized (minter = staking contract)"
 
-echo "[9/10] Initializing Staking contract..."
+echo "[10/10] Initializing Staking contract..."
 stellar contract invoke \
   --id "$STAKING_CONTRACT_ID" \
   --source "$ACCOUNT" \
@@ -156,7 +169,7 @@ stellar contract invoke \
 
 echo "  Staking contract initialized"
 
-echo "[10/10] Initializing Milestone 5 contracts..."
+echo "[11/10] Initializing Governance + Timelock contracts..."
 
 # Lending: CF=7000bps (70%), Liq=8000bps (80%), BorrowRate=500bps (5%)
 stellar contract invoke \
@@ -186,6 +199,22 @@ stellar contract invoke \
 
 echo "  LP Pool contract initialized"
 
+# Timelock: guardian defaults to admin; delay is ~48h at 5s/ledger.
+stellar contract invoke \
+  --id "$TIMELOCK_CONTRACT_ID" \
+  --source "$ACCOUNT" \
+  --network "$NETWORK" \
+  -- initialize \
+  --admin "$ADMIN_PUB_KEY" \
+  --governance_contract "$GOVERNANCE_CONTRACT_ID" \
+  --guardian "$ADMIN_PUB_KEY" \
+  --min_delay_ledgers 34560 \
+  --staking_contract "$STAKING_CONTRACT_ID" \
+  --lending_contract "$LENDING_CONTRACT_ID" \
+  --lp_pool_contract "$LP_POOL_CONTRACT_ID"
+
+echo "  Timelock contract initialized"
+
 # Governance: voting_period=17280 ledgers (~24h), quorum=1000bps (10%)
 stellar contract invoke \
   --id "$GOVERNANCE_CONTRACT_ID" \
@@ -194,10 +223,35 @@ stellar contract invoke \
   -- initialize \
   --admin "$ADMIN_PUB_KEY" \
   --sxlm_token "$TOKEN_CONTRACT_ID" \
+  --timelock_contract "$TIMELOCK_CONTRACT_ID" \
   --voting_period_ledgers 17280 \
   --quorum_bps 1000
 
 echo "  Governance contract initialized"
+
+# Hand governed contracts over to timelock for on-chain execution.
+stellar contract invoke \
+  --id "$STAKING_CONTRACT_ID" \
+  --source "$ACCOUNT" \
+  --network "$NETWORK" \
+  -- set_admin \
+  --new_admin "$TIMELOCK_CONTRACT_ID"
+
+stellar contract invoke \
+  --id "$LENDING_CONTRACT_ID" \
+  --source "$ACCOUNT" \
+  --network "$NETWORK" \
+  -- set_admin \
+  --new_admin "$TIMELOCK_CONTRACT_ID"
+
+stellar contract invoke \
+  --id "$LP_POOL_CONTRACT_ID" \
+  --source "$ACCOUNT" \
+  --network "$NETWORK" \
+  -- set_admin \
+  --new_admin "$TIMELOCK_CONTRACT_ID"
+
+echo "  Staking, lending, and LP pool admin transferred to timelock"
 
 # ---------------------------------------------------------------------------
 # Write .env file
@@ -222,6 +276,7 @@ SXLM_TOKEN_CONTRACT_ID=$TOKEN_CONTRACT_ID
 STAKING_CONTRACT_ID=$STAKING_CONTRACT_ID
 LENDING_CONTRACT_ID=$LENDING_CONTRACT_ID
 LP_POOL_CONTRACT_ID=$LP_POOL_CONTRACT_ID
+TIMELOCK_CONTRACT_ID=$TIMELOCK_CONTRACT_ID
 GOVERNANCE_CONTRACT_ID=$GOVERNANCE_CONTRACT_ID
 
 # --- Backend Server ---
@@ -238,6 +293,8 @@ REDIS_URL=redis://localhost:6379
 # --- Admin Keypair ---
 ADMIN_SECRET_KEY=$ADMIN_SECRET
 ADMIN_PUBLIC_KEY=$ADMIN_PUB_KEY
+GOVERNANCE_RELAYER_SECRET_KEY=$ADMIN_SECRET
+GOVERNANCE_GUARDIAN_ADDRESS=$ADMIN_PUB_KEY
 
 # --- JWT ---
 JWT_SECRET=$(openssl rand -hex 32)
@@ -249,6 +306,7 @@ VITE_SXLM_TOKEN_CONTRACT_ID=$TOKEN_CONTRACT_ID
 VITE_STAKING_CONTRACT_ID=$STAKING_CONTRACT_ID
 VITE_LENDING_CONTRACT_ID=$LENDING_CONTRACT_ID
 VITE_LP_POOL_CONTRACT_ID=$LP_POOL_CONTRACT_ID
+VITE_TIMELOCK_CONTRACT_ID=$TIMELOCK_CONTRACT_ID
 VITE_GOVERNANCE_CONTRACT_ID=$GOVERNANCE_CONTRACT_ID
 VITE_NETWORK_NAME=TESTNET
 VITE_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
@@ -264,6 +322,7 @@ echo "  SXLM_TOKEN_CONTRACT_ID=$TOKEN_CONTRACT_ID"
 echo "  STAKING_CONTRACT_ID=$STAKING_CONTRACT_ID"
 echo "  LENDING_CONTRACT_ID=$LENDING_CONTRACT_ID"
 echo "  LP_POOL_CONTRACT_ID=$LP_POOL_CONTRACT_ID"
+echo "  TIMELOCK_CONTRACT_ID=$TIMELOCK_CONTRACT_ID"
 echo "  GOVERNANCE_CONTRACT_ID=$GOVERNANCE_CONTRACT_ID"
 echo "  NATIVE_TOKEN_ID=$NATIVE_TOKEN_ID"
 echo ""

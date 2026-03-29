@@ -6,6 +6,7 @@ members = [
     "lending",
     "lp-pool",
     "governance",
+    "timelock",
     "bridge",
 ]
 

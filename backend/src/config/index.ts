@@ -52,6 +52,10 @@ export const config = {
       "LP_POOL_CONTRACT_ID",
       "CAW2DRMOI3CCJWKVMEUWYJUEQHXB4S4DR72HNL2DWQCMQQUH3LFFVLHV"
     ),
+    timelockContractId: requireEnv(
+      "TIMELOCK_CONTRACT_ID",
+      ""
+    ),
     governanceContractId: requireEnv(
       "GOVERNANCE_CONTRACT_ID",
       "CB7LV3FBQ7US26GVC7SM7RMX22IEEHAEUL7V3TDDWM32DHA5TDFDDEP4"
@@ -79,6 +83,20 @@ export const config = {
     secretKey: requireEnv("ADMIN_SECRET_KEY", ""),
     // Fallback to known active mainnet account used for read-only Soroban simulations
     publicKey: requireEnv("ADMIN_PUBLIC_KEY", "GDWXTIIROGCVBSNQMBJFH6HOWQ4YSRVMKSUS53CH6MP56WSWD6J4VZ5N"),
+  },
+
+  governanceRelayer: {
+    secretKey: requireEnv(
+      "GOVERNANCE_RELAYER_SECRET_KEY",
+      process.env["ADMIN_SECRET_KEY"] ?? ""
+    ),
+  },
+
+  governanceGuardian: {
+    address: requireEnv(
+      "GOVERNANCE_GUARDIAN_ADDRESS",
+      process.env["ADMIN_PUBLIC_KEY"] ?? ""
+    ),
   },
 
   jwt: {

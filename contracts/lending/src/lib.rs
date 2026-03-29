@@ -68,6 +68,10 @@ fn read_admin(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::Admin).unwrap()
 }
 
+fn require_admin(env: &Env) {
+    read_admin(env).require_auth();
+}
+
 fn read_sxlm_token(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::SxlmToken).unwrap()
 }
@@ -186,8 +190,7 @@ impl LendingContract {
 
     /// Upgrade the contract WASM. Only callable by admin.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
@@ -202,8 +205,7 @@ impl LendingContract {
 
     /// Update the sXLM → XLM exchange rate. Only callable by admin.
     pub fn update_exchange_rate(env: Env, rate: i128) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         assert!(rate > 0, "rate must be positive");
         extend_instance(&env);
         env.storage().instance().set(&DataKey::ExchangeRate, &rate);
@@ -216,8 +218,7 @@ impl LendingContract {
 
     /// Update the collateral factor. Only callable by admin.
     pub fn update_collateral_factor(env: Env, new_cf_bps: u32) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         assert!(new_cf_bps > 0 && new_cf_bps <= 10000, "invalid collateral factor");
         extend_instance(&env);
         env.storage().instance().set(&DataKey::CollateralFactorBps, &(new_cf_bps as i128));
@@ -230,8 +231,7 @@ impl LendingContract {
 
     /// Update the liquidation threshold. Only callable by admin.
     pub fn update_liquidation_threshold(env: Env, new_lt_bps: u32) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         assert!(new_lt_bps > 0 && new_lt_bps <= 10000, "invalid liquidation threshold");
         extend_instance(&env);
         env.storage().instance().set(&DataKey::LiquidationThresholdBps, &(new_lt_bps as i128));
@@ -239,10 +239,15 @@ impl LendingContract {
 
     /// Update the borrow rate. Only callable by admin.
     pub fn update_borrow_rate(env: Env, new_rate_bps: u32) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
         env.storage().instance().set(&DataKey::BorrowRateBps, &(new_rate_bps as i128));
+    }
+
+    pub fn set_admin(env: Env, new_admin: Address) {
+        require_admin(&env);
+        extend_instance(&env);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
     }
 
     // ==========================================================

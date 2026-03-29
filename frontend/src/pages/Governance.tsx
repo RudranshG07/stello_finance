@@ -5,16 +5,20 @@ import { useGovernance } from '../hooks/useGovernance';
 import { formatAddress } from '../utils/stellar';
 
 export default function Governance() {
-  const { isConnected, connect } = useWallet();
+  const { isConnected, connect, publicKey } = useWallet();
   const {
     proposals,
     params,
+    metadata,
+    proposalsSource,
     isLoading,
     isSubmitting,
     error,
     lastTxHash,
     createProposal,
     vote,
+    queueProposal,
+    cancelProposal,
     executeProposal,
     clearError,
   } = useGovernance();
@@ -22,6 +26,10 @@ export default function Governance() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [paramKey, setParamKey] = useState('protocol_fee_bps');
   const [newValue, setNewValue] = useState('');
+  const isGuardian =
+    Boolean(publicKey) &&
+    Boolean(metadata?.guardianAddress) &&
+    metadata?.guardianAddress === publicKey;
 
   const handleCreateProposal = async () => {
     if (!newValue) return;
@@ -43,6 +51,16 @@ export default function Governance() {
     await executeProposal(proposalId);
   };
 
+  const handleQueue = async (proposalId: number) => {
+    clearError();
+    await queueProposal(proposalId);
+  };
+
+  const handleCancel = async (proposalId: number) => {
+    clearError();
+    await cancelProposal(proposalId);
+  };
+
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'active':
@@ -53,6 +71,10 @@ export default function Governance() {
         return <span className="px-2 py-1 rounded-full text-xs bg-red-500/20 text-red-400 border border-red-500/30">Rejected</span>;
       case 'executed':
         return <span className="px-2 py-1 rounded-full text-xs bg-purple-500/20 text-purple-400 border border-purple-500/30">Executed</span>;
+      case 'queued':
+        return <span className="px-2 py-1 rounded-full text-xs bg-blue-500/20 text-blue-300 border border-blue-500/30">Queued</span>;
+      case 'cancelled':
+        return <span className="px-2 py-1 rounded-full text-xs bg-zinc-500/20 text-zinc-300 border border-zinc-500/30">Cancelled</span>;
       default:
         return null;
     }
@@ -83,6 +105,12 @@ export default function Governance() {
         </div>
       </div>
 
+      {metadata?.minDelayLedgers ? (
+        <p className="text-center text-xs text-gray-400">
+          Timelock delay: approximately {formatLedgerDelay(metadata.minDelayLedgers)}
+        </p>
+      ) : null}
+
       {/* Governable Params */}
       {params.length > 0 && (
         <div className="glass rounded-2xl p-6 space-y-3">
@@ -99,6 +127,13 @@ export default function Governance() {
       )}
 
       {/* Error / Success Messages */}
+      {proposalsSource === 'cache' && (
+        <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-3">
+          <p className="text-xs text-blue-200">
+            Governance data is being served from the last synced cache. Action buttons still require fresh on-chain validation.
+          </p>
+        </div>
+      )}
       {error && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
           <p className="text-xs text-red-400">{error}</p>
@@ -148,7 +183,9 @@ export default function Governance() {
                   <option value="protocol_fee_bps">Protocol Fee (bps)</option>
                   <option value="cooldown_period">Cooldown Period (ledgers)</option>
                   <option value="collateral_factor">Collateral Factor (bps)</option>
-                  <option value="buffer_safety_factor">Buffer Safety Factor</option>
+                  <option value="borrow_rate_bps">Borrow Rate (bps)</option>
+                  <option value="liquidation_threshold">Liquidation Threshold (bps)</option>
+                  <option value="lp_protocol_fee_bps">LP Protocol Fee (bps)</option>
                 </>
               )}
             </select>
@@ -207,6 +244,16 @@ export default function Governance() {
                     <p className="text-xs text-gray-400">
                       Proposed by {formatAddress(proposal.proposer)} &bull; New value: <span className="text-white">{proposal.newValue}</span>
                     </p>
+                    {proposal.status === 'queued' && proposal.etaAt ? (
+                      <p className="text-xs text-blue-300 mt-1">
+                        Timelock ETA: {formatEta(proposal.etaAt)}
+                      </p>
+                    ) : null}
+                    {proposal.status === 'cancelled' && proposal.cancelledBy ? (
+                      <p className="text-xs text-zinc-300 mt-1">
+                        Cancelled by guardian {formatAddress(proposal.cancelledBy)}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="flex items-center gap-1 text-xs text-gray-500">
                     <Clock className="w-3 h-3" />
@@ -254,15 +301,35 @@ export default function Governance() {
                   </div>
                 )}
 
-                {/* Execute button: only show for passed proposals (voting ended, not yet executed) */}
                 {proposal.status === 'passed' && !proposal.executed && isConnected && (
                   <button
-                    onClick={() => handleExecute(proposal.id)}
-                    disabled={isSubmitting}
-                    className="w-full py-2 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20 transition-colors text-sm font-medium disabled:opacity-40"
+                    onClick={() => handleQueue(proposal.id)}
+                    disabled={isSubmitting || proposal.canQueue === false}
+                    className="w-full py-2 rounded-xl bg-blue-500/10 text-blue-300 border border-blue-500/20 hover:bg-blue-500/20 transition-colors text-sm font-medium disabled:opacity-40"
                   >
-                    {isSubmitting ? 'Executing...' : 'Execute Proposal'}
+                    {isSubmitting ? 'Queueing...' : 'Queue Proposal'}
                   </button>
+                )}
+
+                {proposal.status === 'queued' && !proposal.executed && isConnected && (
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => handleExecute(proposal.id)}
+                      disabled={isSubmitting || proposal.canExecute === false}
+                      className="flex-1 py-2 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20 transition-colors text-sm font-medium disabled:opacity-40"
+                    >
+                      {isSubmitting ? 'Executing...' : proposal.canExecute ? 'Execute Proposal' : 'Timelock Active'}
+                    </button>
+                    {isGuardian && (
+                      <button
+                        onClick={() => handleCancel(proposal.id)}
+                        disabled={isSubmitting}
+                        className="flex-1 py-2 rounded-xl bg-zinc-500/10 text-zinc-300 border border-zinc-500/20 hover:bg-zinc-500/20 transition-colors text-sm font-medium disabled:opacity-40"
+                      >
+                        {isSubmitting ? 'Cancelling...' : 'Guardian Cancel'}
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             );
@@ -277,4 +344,30 @@ function formatXLMVotes(amount: number): string {
   if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}M`;
   if (amount >= 1_000) return `${(amount / 1_000).toFixed(1)}K`;
   return amount.toFixed(0);
+}
+
+function formatEta(etaAt: string): string {
+  const etaMs = new Date(etaAt).getTime();
+  const remainingMs = etaMs - Date.now();
+  if (remainingMs <= 0) {
+    return `ready now (${new Date(etaAt).toLocaleString()})`;
+  }
+
+  const totalMinutes = Math.ceil(remainingMs / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m remaining`;
+  }
+  return `${minutes}m remaining`;
+}
+
+function formatLedgerDelay(ledgers: number): string {
+  const totalMinutes = Math.round((ledgers * 5) / 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  return `${minutes}m`;
 }

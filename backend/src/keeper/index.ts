@@ -37,6 +37,7 @@ import {
 const KEEPER_INTERVAL_MS = 6 * 60 * 60 * 1000;      // 6 hours
 const TTL_BUMP_INTERVAL_MS = 24 * 60 * 60 * 1000;    // 24 hours
 const RECALIBRATE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const GOVERNANCE_EXECUTION_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 const TREASURY_RECYCLE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const TREASURY_RECYCLE_THRESHOLD = BigInt(100_0000000);   // 100 XLM in stroops
@@ -45,6 +46,7 @@ let keeperInterval: ReturnType<typeof setInterval> | null = null;
 let ttlInterval: ReturnType<typeof setInterval> | null = null;
 let recalibrateInterval: ReturnType<typeof setInterval> | null = null;
 let treasuryRecycleInterval: ReturnType<typeof setInterval> | null = null;
+let governanceExecutionInterval: ReturnType<typeof setInterval> | null = null;
 
 export class KeeperBot {
   private server: rpc.Server;
@@ -62,6 +64,9 @@ export class KeeperBot {
     );
     await this.bumpAllContractTTLs().catch((err) =>
       console.error("[KeeperBot] Initial TTL bump failed:", err)
+    );
+    await this.runGovernanceExecutionCycle().catch((err) =>
+      console.error("[KeeperBot] Initial governance execution cycle failed:", err)
     );
 
     // Schedule harvest cycle every 6h
@@ -100,6 +105,14 @@ export class KeeperBot {
       }
     }, TREASURY_RECYCLE_INTERVAL_MS);
 
+    governanceExecutionInterval = setInterval(async () => {
+      try {
+        await this.runGovernanceExecutionCycle();
+      } catch (err) {
+        console.error("[KeeperBot] Governance execution error:", err);
+      }
+    }, GOVERNANCE_EXECUTION_INTERVAL_MS);
+
     console.log(
       `[KeeperBot] Running — harvest every ${KEEPER_INTERVAL_MS / 3_600_000}h, TTL bump every ${TTL_BUMP_INTERVAL_MS / 3_600_000}h`
     );
@@ -110,6 +123,7 @@ export class KeeperBot {
     if (ttlInterval) { clearInterval(ttlInterval); ttlInterval = null; }
     if (recalibrateInterval) { clearInterval(recalibrateInterval); recalibrateInterval = null; }
     if (treasuryRecycleInterval) { clearInterval(treasuryRecycleInterval); treasuryRecycleInterval = null; }
+    if (governanceExecutionInterval) { clearInterval(governanceExecutionInterval); governanceExecutionInterval = null; }
     console.log("[KeeperBot] Shut down");
   }
 
@@ -226,8 +240,9 @@ export class KeeperBot {
       { name: "Staking",     id: config.contracts.stakingContractId },
       { name: "Lending",     id: config.contracts.lendingContractId },
       { name: "LP Pool",     id: config.contracts.lpPoolContractId },
+      { name: "Timelock",    id: config.contracts.timelockContractId },
       { name: "Governance",  id: config.contracts.governanceContractId },
-    ];
+    ].filter((entry) => Boolean(entry.id));
 
     for (const c of contracts) {
       try {
@@ -314,6 +329,46 @@ export class KeeperBot {
   }
 
   // ============================================================
+  // Governance timelock execution
+  // ============================================================
+
+  async runGovernanceExecutionCycle(): Promise<void> {
+    const governanceId = config.contracts.governanceContractId;
+    if (!governanceId || !config.governanceRelayer.secretKey) {
+      return;
+    }
+
+    try {
+      const proposalCountRaw = await this.simulateView(governanceId, "proposal_count", []);
+      const proposalCount = Number(proposalCountRaw ?? 0);
+
+      for (let i = 0; i < Math.min(proposalCount, 50); i++) {
+        const canExecute = await this.simulateView(governanceId, "can_execute_proposal", [
+          nativeToScVal(BigInt(i), { type: "u64" }),
+        ]);
+
+        if (!canExecute) {
+          continue;
+        }
+
+        try {
+          const hash = await this.executeCallWithSecret(
+            config.governanceRelayer.secretKey,
+            governanceId,
+            "execute_proposal",
+            [nativeToScVal(BigInt(i), { type: "u64" })]
+          );
+          console.log(`[KeeperBot] Executed queued governance proposal #${i}: ${hash}`);
+        } catch (err) {
+          console.error(`[KeeperBot] Failed to execute queued proposal #${i}:`, err);
+        }
+      }
+    } catch (err) {
+      console.warn("[KeeperBot] Could not scan governance proposals:", err);
+    }
+  }
+
+  // ============================================================
   // Helpers
   // ============================================================
 
@@ -325,7 +380,9 @@ export class KeeperBot {
     const contract = new Contract(contractId);
     const op = contract.call(method, ...args);
 
-    const keypair = Keypair.fromSecret(config.admin.secretKey);
+    const simulationSecret =
+      config.governanceRelayer.secretKey || config.admin.secretKey;
+    const keypair = Keypair.fromSecret(simulationSecret);
     const account = await this.server.getAccount(keypair.publicKey());
 
     const tx = new TransactionBuilder(account, {
@@ -349,7 +406,16 @@ export class KeeperBot {
     method: string,
     args: ReturnType<typeof nativeToScVal>[]
   ): Promise<string> {
-    const keypair = Keypair.fromSecret(config.admin.secretKey);
+    return this.executeCallWithSecret(config.admin.secretKey, contractId, method, args);
+  }
+
+  private async executeCallWithSecret(
+    secretKey: string,
+    contractId: string,
+    method: string,
+    args: ReturnType<typeof nativeToScVal>[]
+  ): Promise<string> {
+    const keypair = Keypair.fromSecret(secretKey);
     const account = await this.server.getAccount(keypair.publicKey());
 
     const contract = new Contract(contractId);

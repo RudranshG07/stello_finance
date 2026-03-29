@@ -80,6 +80,7 @@ const CONTRACT_IDS = [
   config.contracts.stakingContractId,
   config.contracts.lendingContractId,
   config.contracts.lpPoolContractId,
+  config.contracts.timelockContractId,
   config.contracts.governanceContractId,
   config.contracts.sxlmTokenContractId,
 ].filter(Boolean);
