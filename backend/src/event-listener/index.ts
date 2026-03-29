@@ -10,6 +10,7 @@ let pollInterval: ReturnType<typeof setInterval> | null = null;
 let lastLedger = 0;
 
 const LEDGER_STATE_FILE = path.join(process.cwd(), ".last_ledger");
+const APPROX_LEDGER_CLOSE_MS = 5_000;
 
 interface RawSorobanEvent {
   type: string;
@@ -77,6 +78,7 @@ export class EventListenerService {
                   config.contracts.sxlmTokenContractId,
                   config.contracts.lendingContractId,
                   config.contracts.lpPoolContractId,
+                  config.contracts.timelockContractId,
                   config.contracts.governanceContractId,
                 ].filter(Boolean),
               },
@@ -143,6 +145,18 @@ export class EventListenerService {
     } catch {
       return raw;
     }
+  }
+
+  private async updateGovernanceProposal(
+    proposalId: number,
+    data: any
+  ): Promise<void> {
+    await this.prisma.governanceProposal.updateMany({
+      where: {
+        OR: [{ chainProposalId: proposalId }, { id: proposalId + 1 }],
+      },
+      data,
+    }).catch(() => undefined);
   }
 
   private async processEvent(event: RawSorobanEvent): Promise<void> {
@@ -350,7 +364,55 @@ export class EventListenerService {
     } else if (topicName === "voted") {
       console.log(`[EventListener] Vote cast at ledger ${event.ledger}`);
 
-    } else if (topicName === "executed") {
+    } else if (topicName === "queued") {
+      const values = decoded as unknown[] | unknown;
+      const proposalId = Array.isArray(values) ? Number(values[0] ?? -1) : -1;
+      const etaLedger = Array.isArray(values)
+        ? Number(values[event.contractId === config.contracts.timelockContractId ? 2 : 1] ?? 0)
+        : 0;
+      if (proposalId >= 0) {
+        const etaAt =
+          etaLedger > 0
+            ? new Date(Date.now() + Math.max(etaLedger - event.ledger, 0) * APPROX_LEDGER_CLOSE_MS)
+            : null;
+        await this.updateGovernanceProposal(proposalId, {
+          status: "queued",
+          queuedLedger: event.ledger,
+          etaLedger: etaLedger || null,
+          queuedAt: new Date(),
+          etaAt,
+          canQueue: false,
+          canExecute: false,
+        });
+      }
+      console.log(`[EventListener] Proposal queued at ledger ${event.ledger}`);
+
+    } else if (topicName === "cancel") {
+      const values = decoded as [bigint | number, string] | unknown;
+      const proposalId = Array.isArray(values) ? Number(values[0] ?? -1) : -1;
+      const cancelledBy = Array.isArray(values) ? String(values[1] ?? "") : "";
+      if (proposalId >= 0) {
+        await this.updateGovernanceProposal(proposalId, {
+          status: "cancelled",
+          cancelledAt: new Date(),
+          cancelledBy: cancelledBy || null,
+          canQueue: false,
+          canExecute: false,
+        });
+      }
+      console.log(`[EventListener] Proposal cancelled at ledger ${event.ledger}`);
+
+    } else if (topicName === "exec" || topicName === "executed") {
+      const values = decoded as [bigint | number, unknown, unknown] | unknown;
+      const proposalId = Array.isArray(values) ? Number(values[0] ?? -1) : -1;
+      if (proposalId >= 0) {
+        await this.updateGovernanceProposal(proposalId, {
+          status: "executed",
+          executedAt: new Date(),
+          canQueue: false,
+          canExecute: false,
+        });
+      }
       console.log(`[EventListener] Proposal executed at ledger ${event.ledger}`);
     }
   }

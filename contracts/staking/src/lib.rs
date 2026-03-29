@@ -7,8 +7,8 @@ use soroban_sdk::{
 /// Precision multiplier for exchange rate calculations (7 decimals).
 const RATE_PRECISION: i128 = 10_000_000; // 1e7
 
-/// Protocol fee in basis points (1000 = 10%).
-const PROTOCOL_FEE_BPS: i128 = 1000;
+/// Default protocol fee in basis points (1000 = 10%).
+const DEFAULT_PROTOCOL_FEE_BPS: i128 = 1000;
 const BPS_DENOMINATOR: i128 = 10_000;
 
 // ---------- TTL constants ----------
@@ -34,6 +34,7 @@ pub enum DataKey {
     Paused,
     Treasury,
     TreasuryBalance,
+    ProtocolFeeBps,
 }
 
 #[derive(Clone)]
@@ -74,6 +75,10 @@ fn read_admin(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::Admin).unwrap()
 }
 
+fn require_admin(env: &Env) {
+    read_admin(env).require_auth();
+}
+
 fn read_sxlm_token(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::SxlmToken).unwrap()
 }
@@ -87,6 +92,13 @@ fn read_cooldown(env: &Env) -> u32 {
         .instance()
         .get(&DataKey::CooldownPeriod)
         .unwrap_or(17280u32) // ~24 hours at 5s/ledger
+}
+
+fn read_protocol_fee_bps(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProtocolFeeBps)
+        .unwrap_or(DEFAULT_PROTOCOL_FEE_BPS)
 }
 
 fn is_paused(env: &Env) -> bool {
@@ -161,13 +173,13 @@ impl StakingContract {
         write_i128(&env, &DataKey::TotalSxlmSupply, 0);
         write_i128(&env, &DataKey::LiquidityBuffer, 0);
         write_i128(&env, &DataKey::TreasuryBalance, 0);
+        write_i128(&env, &DataKey::ProtocolFeeBps, DEFAULT_PROTOCOL_FEE_BPS);
         extend_instance(&env);
     }
 
     /// Upgrade the contract WASM. Only callable by admin.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
@@ -326,14 +338,13 @@ impl StakingContract {
     /// Add staking rewards — takes protocol fee (10%), remainder increases
     /// total_xlm_staked, raising the exchange rate.
     pub fn add_rewards(env: Env, amount: i128) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         if amount <= 0 {
             panic!("reward amount must be positive");
         }
         extend_instance(&env);
 
-        let fee = amount * PROTOCOL_FEE_BPS / BPS_DENOMINATOR;
+        let fee = amount * read_protocol_fee_bps(&env) / BPS_DENOMINATOR;
         let net_reward = amount - fee;
 
         let treasury_bal = read_i128(&env, &DataKey::TreasuryBalance);
@@ -351,10 +362,10 @@ impl StakingContract {
     /// Withdraw protocol fees to the admin address.
     /// If amount > 0, withdraw that specific amount; if 0, withdraw all.
     pub fn withdraw_fees(env: Env, amount: i128) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
 
+        let admin = read_admin(&env);
         let treasury_bal = read_i128(&env, &DataKey::TreasuryBalance);
 
         let withdraw_amount = if amount <= 0 {
@@ -383,8 +394,7 @@ impl StakingContract {
     }
 
     pub fn set_treasury(env: Env, treasury: Address) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
         env.storage().instance().set(&DataKey::Treasury, &treasury);
     }
@@ -394,8 +404,7 @@ impl StakingContract {
     // ==========================================================
 
     pub fn apply_slashing(env: Env, slash_amount: i128) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         if slash_amount <= 0 {
             panic!("slash amount must be positive");
         }
@@ -451,16 +460,14 @@ impl StakingContract {
     // ==========================================================
 
     pub fn pause(env: Env) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
         env.storage().instance().set(&DataKey::Paused, &true);
         env.events().publish((soroban_sdk::symbol_short!("paused"),), true);
     }
 
     pub fn unpause(env: Env) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.events().publish((soroban_sdk::symbol_short!("paused"),), false);
@@ -471,13 +478,13 @@ impl StakingContract {
     // ==========================================================
 
     pub fn add_liquidity(env: Env, amount: i128) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         if amount <= 0 {
             panic!("liquidity amount must be positive");
         }
         extend_instance(&env);
 
+        let admin = read_admin(&env);
         let native_token_addr = read_native_token(&env);
         let xlm_client = token::Client::new(&env, &native_token_addr);
         xlm_client.transfer(&admin, &env.current_contract_address(), &amount);
@@ -487,25 +494,29 @@ impl StakingContract {
     }
 
     pub fn update_validators(env: Env, validators: Vec<Address>) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
         env.storage().instance().set(&DataKey::Validators, &validators);
     }
 
     pub fn set_admin(env: Env, new_admin: Address) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
         env.storage().instance().set(&DataKey::Admin, &new_admin);
     }
 
     pub fn set_cooldown_period(env: Env, new_cooldown: u32) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
         env.storage().instance().set(&DataKey::CooldownPeriod, &new_cooldown);
         env.events().publish((soroban_sdk::symbol_short!("cd_upd"),), new_cooldown);
+    }
+
+    pub fn set_protocol_fee_bps(env: Env, new_fee_bps: u32) {
+        require_admin(&env);
+        assert!(new_fee_bps <= 10_000, "invalid protocol fee");
+        extend_instance(&env);
+        write_i128(&env, &DataKey::ProtocolFeeBps, new_fee_bps as i128);
     }
 
     // ==========================================================
@@ -550,7 +561,7 @@ impl StakingContract {
 
     pub fn protocol_fee_bps(env: Env) -> i128 {
         extend_instance(&env);
-        PROTOCOL_FEE_BPS
+        read_protocol_fee_bps(&env)
     }
 
     pub fn get_cooldown_period(env: Env) -> u32 {
@@ -624,7 +635,7 @@ mod test {
         assert_eq!(client.get_validators().len(), 0);
         assert_eq!(client.is_paused(), false);
         assert_eq!(client.treasury_balance(), 0);
-        assert_eq!(client.protocol_fee_bps(), PROTOCOL_FEE_BPS);
+        assert_eq!(client.protocol_fee_bps(), DEFAULT_PROTOCOL_FEE_BPS);
     }
 
     #[test]

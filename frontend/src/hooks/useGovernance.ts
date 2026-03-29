@@ -12,9 +12,25 @@ interface Proposal {
   votesAgainst: string;
   status: string;
   executed: boolean;
+  queuedLedger?: number;
+  etaLedger?: number;
+  queuedAt?: string;
+  etaAt?: string;
+  cancelledAt?: string;
+  executedAt?: string;
+  cancelledBy?: string;
+  canQueue?: boolean;
+  canExecute?: boolean;
   startLedger?: number;
   endLedger?: number;
   expiresAt?: string;
+}
+
+interface GovernanceMetadata {
+  guardianAddress: string;
+  timelockContractId: string;
+  minDelayLedgers: number;
+  source?: string;
 }
 
 interface GovParam {
@@ -26,12 +42,16 @@ interface GovParam {
 interface UseGovernanceReturn {
   proposals: Proposal[];
   params: GovParam[];
+  metadata: GovernanceMetadata | null;
+  proposalsSource: string;
   isLoading: boolean;
   isSubmitting: boolean;
   error: string | null;
   lastTxHash: string | null;
   createProposal: (paramKey: string, newValue: string) => Promise<boolean>;
   vote: (proposalId: number, support: boolean) => Promise<boolean>;
+  queueProposal: (proposalId: number) => Promise<boolean>;
+  cancelProposal: (proposalId: number) => Promise<boolean>;
   executeProposal: (proposalId: number) => Promise<boolean>;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -41,6 +61,8 @@ export function useGovernance(): UseGovernanceReturn {
   const { publicKey, isConnected, signTransaction, getAuthHeaders } = useWallet();
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [params, setParams] = useState<GovParam[]>([]);
+  const [metadata, setMetadata] = useState<GovernanceMetadata | null>(null);
+  const [proposalsSource, setProposalsSource] = useState('chain');
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,16 +72,21 @@ export function useGovernance(): UseGovernanceReturn {
 
   const fetchData = useCallback(async () => {
     try {
-      const [proposalsRes, paramsRes] = await Promise.allSettled([
+      const [proposalsRes, paramsRes, metadataRes] = await Promise.allSettled([
         axios.get(`${API_BASE_URL}/api/governance/proposals`),
         axios.get(`${API_BASE_URL}/api/governance/params`),
+        axios.get(`${API_BASE_URL}/api/governance/metadata`),
       ]);
 
       if (proposalsRes.status === 'fulfilled' && proposalsRes.value) {
         setProposals(proposalsRes.value.data.proposals || []);
+        setProposalsSource(proposalsRes.value.data.source || 'chain');
       }
       if (paramsRes.status === 'fulfilled' && paramsRes.value) {
         setParams(paramsRes.value.data.params || []);
+      }
+      if (metadataRes && metadataRes.status === 'fulfilled' && metadataRes.value) {
+        setMetadata(metadataRes.value.data || null);
       }
     } catch {
       // Keep defaults
@@ -131,6 +158,16 @@ export function useGovernance(): UseGovernanceReturn {
     [submitGovTx]
   );
 
+  const queueProposal = useCallback(
+    (proposalId: number) => submitGovTx('queue', { proposalId }),
+    [submitGovTx]
+  );
+
+  const cancelProposal = useCallback(
+    (proposalId: number) => submitGovTx('cancel', { proposalId }),
+    [submitGovTx]
+  );
+
   const executeProposal = useCallback(
     (proposalId: number) => submitGovTx('execute', { proposalId }),
     [submitGovTx]
@@ -139,12 +176,16 @@ export function useGovernance(): UseGovernanceReturn {
   return {
     proposals,
     params,
+    metadata,
+    proposalsSource,
     isLoading,
     isSubmitting,
     error,
     lastTxHash,
     createProposal,
     vote,
+    queueProposal,
+    cancelProposal,
     executeProposal,
     clearError,
     refresh: fetchData,

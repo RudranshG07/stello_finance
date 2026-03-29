@@ -19,7 +19,7 @@ The project is a monorepo with three main components:
 
 - **Chain:** Stellar (Soroban). Default configuration targets Stellar Testnet.
 - **Data:** PostgreSQL (Prisma) for validators, metrics, withdrawals, positions, governance; Redis for event bus.
-- **Wallet:** Stellar Freighter (frontend); backend uses admin keypair for contract interactions.
+- **Wallet:** Stellar Freighter (frontend); backend uses a legacy admin key where required plus a governance relayer and guardian-aware timelock flow for governance operations.
 
 ---
 
@@ -31,6 +31,7 @@ The project is a monorepo with three main components:
 | Staking | `CDYXKWVDGEVA6OSIGN7GRAPPRN6AKID35OJL5ZZQIBCMECZ35KGL45PS` |
 | LP Pool | `CAW2DRMOI3CCJWKVMEUWYJUEQHXB4S4DR72HNL2DWQCMQQUH3LFFVLHV` |
 | Lending | `CAOWXZ6BWA2ZYY7GHD75OFKADKUJS4WCKPDYGGXULQWFJRB55TXAQNJG` |
+| Timelock | `Set after deployment` |
 | Governance | `CB7LV3FBQ7US26GVC7SM7RMX22IEEHAEUL7V3TDDWM32DHA5TDFDDEP4` |
 
 Backend `.env`:
@@ -40,6 +41,7 @@ SXLM_TOKEN_CONTRACT_ID=CAS3J7GYLGXMF6TDJBBYYSE3HQ6BBSMLNUQ34T6TZMYMW2EVH34XOWMA
 STAKING_CONTRACT_ID=CDYXKWVDGEVA6OSIGN7GRAPPRN6AKID35OJL5ZZQIBCMECZ35KGL45PS
 LP_POOL_CONTRACT_ID=CAW2DRMOI3CCJWKVMEUWYJUEQHXB4S4DR72HNL2DWQCMQQUH3LFFVLHV
 LENDING_CONTRACT_ID=CAOWXZ6BWA2ZYY7GHD75OFKADKUJS4WCKPDYGGXULQWFJRB55TXAQNJG
+TIMELOCK_CONTRACT_ID=
 GOVERNANCE_CONTRACT_ID=CB7LV3FBQ7US26GVC7SM7RMX22IEEHAEUL7V3TDDWM32DHA5TDFDDEP4
 ```
 
@@ -73,6 +75,7 @@ Workspace members:
 - `staking` — stake/unstake and delegation
 - `lending` — collateralized lending
 - `lp-pool` — XLM/sXLM liquidity pool
+- `timelock` — queued governance execution and guardian cancellation
 - `governance` — parameter proposals and voting
 
 Deploy and configure contract IDs per your network (testnet/mainnet) and set the same IDs in backend and frontend environment variables.
@@ -124,11 +127,14 @@ Default dev server: `http://localhost:5173`.
 | `STAKING_CONTRACT_ID` | Deployed staking contract ID |
 | `LENDING_CONTRACT_ID` | Deployed lending contract ID |
 | `LP_POOL_CONTRACT_ID` | Deployed LP pool contract ID |
+| `TIMELOCK_CONTRACT_ID` | Deployed governance timelock contract ID |
 | `GOVERNANCE_CONTRACT_ID` | Deployed governance contract ID |
 | `PORT` | API port (default `3001`) |
 | `HOST` | Bind host (default `0.0.0.0`) |
 | `ADMIN_SECRET_KEY` | Admin secret key for contract txs |
 | `ADMIN_PUBLIC_KEY` | Admin public key |
+| `GOVERNANCE_RELAYER_SECRET_KEY` | Relayer used for queued governance execution |
+| `GOVERNANCE_GUARDIAN_ADDRESS` | Emergency guardian address for timelock cancellation |
 | `JWT_SECRET` | Secret for JWT auth |
 | `JWT_EXPIRES_IN` | JWT expiry (e.g. `24h`) |
 | `GOVERNANCE_WEBHOOK_URL` | Optional webhook for governance events |
@@ -148,6 +154,7 @@ Prefix with `VITE_` so Vite exposes them to the client:
 | `VITE_STAKING_CONTRACT_ID` | Staking contract ID |
 | `VITE_LENDING_CONTRACT_ID` | Lending contract ID |
 | `VITE_LP_POOL_CONTRACT_ID` | LP pool contract ID |
+| `VITE_TIMELOCK_CONTRACT_ID` | Timelock contract ID |
 | `VITE_GOVERNANCE_CONTRACT_ID` | Governance contract ID |
 | `VITE_API_URL` | Backend API base URL (e.g. `http://localhost:3001`) |
 
@@ -162,6 +169,7 @@ xlmLR/
 │   ├── staking/
 │   ├── lending/
 │   ├── lp-pool/
+│   ├── timelock/
 │   └── governance/
 ├── backend/                  # Node.js API and services
 │   ├── prisma/
@@ -227,6 +235,48 @@ xlmLR/
 - **Backend:** `backend/nixpacks.toml` defines build and start (Prisma generate, build, migrate deploy, then `node dist/index.js`). Use with Nixpacks or adapt for your platform.
 - **Frontend:** Build with `npm run build` and serve the `dist/` output with any static host; set `VITE_API_URL` to your backend URL.
 - **Contracts:** Deploy each contract to your target Stellar network and record contract IDs in backend and frontend env.
+
+## Governance
+
+- Passed proposals are queued into the timelock before execution.
+- Once the timelock delay expires, execution is permissionless.
+- The emergency guardian can cancel a queued proposal before execution.
+- Backend proposal reads may fall back to the last synced DB cache if live chain reads fail.
+
+## Governance Implementation
+
+The governance timelock requirement was implemented in these steps:
+
+1. Added a dedicated `timelock` Soroban contract with configurable delay, queue, cancel, execute, guardian reads, and execution-status reads.
+2. Refactored the governance contract so passed proposals are queued first and executed through timelock instead of applying parameter changes directly.
+3. Added proposal lifecycle fields on-chain for queue and ETA tracking.
+4. Moved governed staking fee configuration into contract storage and exposed the required governed setter.
+5. Enabled lending and LP pool admin handoff to timelock so protocol parameters can be changed without a direct admin execution path.
+6. Updated deployment flow to deploy timelock, initialize governance with timelock, and transfer staking, lending, and LP pool admin ownership to timelock.
+7. Removed backend admin-side governance execution and replaced it with queue, cancel, execute, proposal-detail, and governance-metadata endpoints.
+8. Extended Prisma governance persistence so proposal lifecycle state can be cached and served when live chain reads fail.
+9. Updated the event listener and keeper so queued, cancelled, and executed proposals sync into the backend state and ready proposals can be executed by the governance relayer.
+10. Updated the frontend governance page to show queued and cancelled states, timelock ETA, guardian-only cancellation, and cached-state messaging.
+
+### Supported Governed Actions
+
+- staking protocol fee updates
+- staking cooldown updates
+- lending collateral factor updates
+- lending borrow rate updates
+- lending liquidation threshold updates
+- LP protocol fee updates
+
+### Current Status
+
+- Contract implementation is in place.
+- Backend and frontend integration are in place.
+- Cached fallback proposal reads are supported.
+- Permissionless post-delay execution is preserved.
+- Guardian cancellation is enforced on-chain and gated in the UI.
+- Remaining operational work is deployment, migration application, and post-deploy verification on the target network.
+
+See [Governance Decentralization Roadmap](./docs/governance-decentralization-roadmap.md) for the phased admin-key deprecation plan.
 
 ---
 

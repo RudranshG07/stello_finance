@@ -70,6 +70,10 @@ fn read_admin(env: &Env) -> Address {
     env.storage().instance().get(&DataKey::Admin).unwrap()
 }
 
+fn require_admin(env: &Env) {
+    read_admin(env).require_auth();
+}
+
 fn read_lp_balance(env: &Env, user: &Address) -> i128 {
     let key = DataKey::LpBalance(user.clone());
     let val: i128 = env.storage().persistent().get(&key).unwrap_or(0);
@@ -132,8 +136,7 @@ impl LpPoolContract {
 
     /// Upgrade the contract WASM. Only callable by admin.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
@@ -320,10 +323,10 @@ impl LpPoolContract {
 
     /// Collect accrued protocol fees. Admin-only. Transfers XLM to admin and resets counter.
     pub fn collect_protocol_fees(env: Env) -> i128 {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
 
+        let admin = read_admin(&env);
         let accrued = read_i128(&env, &DataKey::AccruedProtocolFees);
         if accrued <= 0 {
             return 0;
@@ -344,10 +347,15 @@ impl LpPoolContract {
 
     /// Set protocol fee in basis points (portion of LP fee taken for protocol).
     pub fn set_protocol_fee_bps(env: Env, bps: u32) {
-        let admin = read_admin(&env);
-        admin.require_auth();
+        require_admin(&env);
         extend_instance(&env);
         write_i128(&env, &DataKey::ProtocolFeeBps, bps as i128);
+    }
+
+    pub fn set_admin(env: Env, new_admin: Address) {
+        require_admin(&env);
+        extend_instance(&env);
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
     }
 
     // --- Views ---

@@ -15,6 +15,12 @@ interface ApiErrorResponse {
   timestamp: string;
 }
 
+type FastifyLikeError = Error & {
+  statusCode?: number;
+  validation?: unknown;
+  cause?: unknown;
+};
+
 /**
  * Map of known error codes to HTTP status codes and default messages.
  * Route handlers can throw an Error whose `message` matches a key here
@@ -77,6 +83,7 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
 
   // ── Centralized error handler ───────────────────────────────────────────
   fastify.setErrorHandler((error, request, reply) => {
+    const appError = error as FastifyLikeError;
     const requestId =
       (request as FastifyRequest & { requestId?: string }).requestId ??
       crypto.randomUUID();
@@ -95,8 +102,8 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
     }
 
     // Fastify wraps Zod errors in its own error object sometimes
-    if (error.validation || (error as any).cause instanceof ZodError) {
-      const zodErr = (error as any).cause as ZodError | undefined;
+    if (appError.validation || appError.cause instanceof ZodError) {
+      const zodErr = appError.cause instanceof ZodError ? appError.cause : undefined;
       const response: ApiErrorResponse = {
         error: "Validation failed",
         code: "VALIDATION_ERROR",
@@ -109,7 +116,7 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
     }
 
     // Rate limit errors from @fastify/rate-limit
-    if (error.statusCode === 429) {
+    if (appError.statusCode === 429) {
       const response: ApiErrorResponse = {
         error: "Too many requests. Please slow down.",
         code: "RATE_LIMITED",
@@ -121,10 +128,10 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
     }
 
     // Known error codes
-    const mapped = ERROR_CODE_MAP[error.message];
+    const mapped = ERROR_CODE_MAP[appError.message];
     if (mapped) {
       const response: ApiErrorResponse = {
-        error: error.message,
+        error: appError.message,
         code: mapped.code,
         statusCode: mapped.statusCode,
         requestId,
@@ -134,14 +141,14 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
     }
 
     // Determine status code: use Fastify's statusCode if set, else 500
-    const statusCode = error.statusCode && error.statusCode >= 400
-      ? error.statusCode
+    const statusCode = appError.statusCode && appError.statusCode >= 400
+      ? appError.statusCode
       : 500;
 
     // For 5xx errors, log the full stack trace but don't leak it to the client
     if (statusCode >= 500) {
       fastify.log.error(
-        { err: error, requestId, url: request.url, method: request.method },
+        { err: appError, requestId, url: request.url, method: request.method },
         "Unhandled server error"
       );
     }
@@ -149,7 +156,7 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
     const response: ApiErrorResponse = {
       error: statusCode >= 500
         ? "An internal error occurred. Please try again later."
-        : error.message,
+        : appError.message,
       code: statusCode >= 500 ? "INTERNAL_ERROR" : "REQUEST_ERROR",
       statusCode,
       requestId,

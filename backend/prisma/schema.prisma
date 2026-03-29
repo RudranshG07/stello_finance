@@ -98,15 +98,27 @@ model LPPosition {
 }
 
 model GovernanceProposal {
-  id           Int      @id @default(autoincrement())
-  proposer     String
-  paramKey     String
-  newValue     String
-  votesFor     BigInt   @default(0)
-  votesAgainst BigInt   @default(0)
-  status       String   @default("active")
-  createdAt    DateTime @default(now())
-  expiresAt    DateTime
+  id              Int      @id @default(autoincrement())
+  chainProposalId Int?     @unique
+  proposer        String
+  paramKey        String
+  newValue        String
+  votesFor        BigInt   @default(0)
+  votesAgainst    BigInt   @default(0)
+  status          String   @default("active")
+  startLedger     Int?
+  endLedger       Int?
+  queuedLedger    Int?
+  etaLedger       Int?
+  canQueue        Boolean  @default(false)
+  canExecute      Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  expiresAt       DateTime
+  queuedAt        DateTime?
+  etaAt           DateTime?
+  cancelledAt     DateTime?
+  executedAt      DateTime?
+  cancelledBy     String?
 
   @@map("governance_proposals")
 }
