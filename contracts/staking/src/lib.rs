@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, BytesN, Env, Map, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Map, Vec};
 
 /// Precision multiplier for exchange rate calculations (7 decimals).
 const RATE_PRECISION: i128 = 10_000_000; // 1e7
@@ -12,10 +10,10 @@ const PROTOCOL_FEE_BPS: i128 = 1000;
 const BPS_DENOMINATOR: i128 = 10_000;
 
 // ---------- TTL constants ----------
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800;   // ~7 days
-const INSTANCE_BUMP_AMOUNT: u32        = 518_400;    // bump to ~30 days
+const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
+const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 518_400; // ~30 days
-const PERSISTENT_BUMP_AMOUNT: u32       = 3_110_400; // bump to ~180 days
+const PERSISTENT_BUMP_AMOUNT: u32 = 3_110_400; // bump to ~180 days
 
 #[derive(Clone)]
 #[contracttype]
@@ -55,9 +53,11 @@ fn extend_instance(env: &Env) {
 }
 
 fn extend_queue(env: &Env) {
-    env.storage()
-        .persistent()
-        .extend_ttl(&DataKey::WithdrawalQueue, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    env.storage().persistent().extend_ttl(
+        &DataKey::WithdrawalQueue,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
 }
 
 // --- Storage helpers ---
@@ -152,9 +152,15 @@ impl StakingContract {
         }
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::SxlmToken, &sxlm_token);
-        env.storage().instance().set(&DataKey::NativeToken, &native_token);
-        env.storage().instance().set(&DataKey::CooldownPeriod, &cooldown_period);
+        env.storage()
+            .instance()
+            .set(&DataKey::SxlmToken, &sxlm_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::NativeToken, &native_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::CooldownPeriod, &cooldown_period);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::Treasury, &admin);
         write_i128(&env, &DataKey::TotalXlmStaked, 0);
@@ -307,7 +313,11 @@ impl StakingContract {
         set_withdrawal_queue(&env, &queue);
 
         let total_staked = read_i128(&env, &DataKey::TotalXlmStaked);
-        write_i128(&env, &DataKey::TotalXlmStaked, total_staked - request.xlm_amount);
+        write_i128(
+            &env,
+            &DataKey::TotalXlmStaked,
+            total_staked - request.xlm_amount,
+        );
 
         let native_token_addr = read_native_token(&env);
         let xlm_client = token::Client::new(&env, &native_token_addr);
@@ -357,11 +367,7 @@ impl StakingContract {
 
         let treasury_bal = read_i128(&env, &DataKey::TreasuryBalance);
 
-        let withdraw_amount = if amount <= 0 {
-            treasury_bal
-        } else {
-            amount
-        };
+        let withdraw_amount = if amount <= 0 { treasury_bal } else { amount };
 
         if withdraw_amount <= 0 {
             panic!("no fees to withdraw");
@@ -374,7 +380,11 @@ impl StakingContract {
         let xlm_client = token::Client::new(&env, &native_token_addr);
         xlm_client.transfer(&env.current_contract_address(), &admin, &withdraw_amount);
 
-        write_i128(&env, &DataKey::TreasuryBalance, treasury_bal - withdraw_amount);
+        write_i128(
+            &env,
+            &DataKey::TreasuryBalance,
+            treasury_bal - withdraw_amount,
+        );
 
         env.events().publish(
             (soroban_sdk::symbol_short!("fee_out"),),
@@ -455,7 +465,8 @@ impl StakingContract {
         admin.require_auth();
         extend_instance(&env);
         env.storage().instance().set(&DataKey::Paused, &true);
-        env.events().publish((soroban_sdk::symbol_short!("paused"),), true);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("paused"),), true);
     }
 
     pub fn unpause(env: Env) {
@@ -463,7 +474,8 @@ impl StakingContract {
         admin.require_auth();
         extend_instance(&env);
         env.storage().instance().set(&DataKey::Paused, &false);
-        env.events().publish((soroban_sdk::symbol_short!("paused"),), false);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("paused"),), false);
     }
 
     // ==========================================================
@@ -490,7 +502,9 @@ impl StakingContract {
         let admin = read_admin(&env);
         admin.require_auth();
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::Validators, &validators);
+        env.storage()
+            .instance()
+            .set(&DataKey::Validators, &validators);
     }
 
     pub fn set_admin(env: Env, new_admin: Address) {
@@ -504,8 +518,11 @@ impl StakingContract {
         let admin = read_admin(&env);
         admin.require_auth();
         extend_instance(&env);
-        env.storage().instance().set(&DataKey::CooldownPeriod, &new_cooldown);
-        env.events().publish((soroban_sdk::symbol_short!("cd_upd"),), new_cooldown);
+        env.storage()
+            .instance()
+            .set(&DataKey::CooldownPeriod, &new_cooldown);
+        env.events()
+            .publish((soroban_sdk::symbol_short!("cd_upd"),), new_cooldown);
     }
 
     // ==========================================================
@@ -652,8 +669,12 @@ mod test {
         env.mock_all_auths();
 
         let admin = Address::generate(&env);
-        let sxlm_id = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
-        let native_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
 
         let contract_id = env.register_contract(None, StakingContract);
         let client = StakingContractClient::new(&env, &contract_id);
@@ -673,7 +694,10 @@ mod test {
         // Withdraw partial (50 XLM)
         client.withdraw_fees(&50_0000000);
         assert_eq!(client.treasury_balance(), 50_0000000);
-        assert_eq!(token_client.balance(&admin) - admin_balance_before, 50_0000000);
+        assert_eq!(
+            token_client.balance(&admin) - admin_balance_before,
+            50_0000000
+        );
 
         // Withdraw remaining (pass 0 = withdraw all)
         client.withdraw_fees(&0);

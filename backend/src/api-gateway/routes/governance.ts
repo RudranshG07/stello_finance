@@ -36,6 +36,11 @@ const executeSchema = z.object({
   proposalId: z.number().int().min(0),
 });
 
+const proposalIdSchema = z.object({
+  userAddress: z.string().min(56).max(56),
+  proposalId: z.number().int().min(0),
+});
+
 async function buildContractTx(
   server: rpc.Server,
   contractId: string,
@@ -239,7 +244,7 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
 
   /**
    * POST /governance/execute
-   * Build unsigned tx: execute a passed proposal.
+   * Build unsigned tx: execute a passed proposal (legacy admin bypass, skips timelock).
    */
   fastify.post("/governance/execute", async (request, reply) => {
     try {
@@ -262,14 +267,102 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
           where: { id: dbProposal.id },
           data: { status: "executed" },
         });
-
-        // Apply the governance parameter to the relevant contract
         await applyGovernanceParam(dbProposal.paramKey, dbProposal.newValue);
       }
 
       return result;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Execution failed";
+      reply.status(400).send({ error: message });
+    }
+  });
+
+  /**
+   * POST /governance/queue
+   * Queue a passed proposal into the timelock. Anyone can call.
+   */
+  fastify.post("/governance/queue", async (request, reply) => {
+    try {
+      const body = proposalIdSchema.parse(request.body);
+
+      const result = await buildContractTx(
+        server,
+        govContractId,
+        "queue_proposal",
+        [nativeToScVal(BigInt(body.proposalId), { type: "u64" })],
+        body.userAddress
+      );
+
+      await prisma.governanceProposal.updateMany({
+        where: { id: body.proposalId + 1 },
+        data: { status: "queued" },
+      });
+
+      return result;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Queue failed";
+      reply.status(400).send({ error: message });
+    }
+  });
+
+  /**
+   * POST /governance/cancel
+   * Cancel a queued proposal. Guardian or admin only (auth enforced on-chain).
+   */
+  fastify.post("/governance/cancel", async (request, reply) => {
+    try {
+      const body = proposalIdSchema.parse(request.body);
+
+      const result = await buildContractTx(
+        server,
+        govContractId,
+        "cancel_proposal",
+        [nativeToScVal(BigInt(body.proposalId), { type: "u64" })],
+        body.userAddress
+      );
+
+      await prisma.governanceProposal.updateMany({
+        where: { id: body.proposalId + 1 },
+        data: { status: "cancelled" },
+      });
+
+      return result;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Cancel failed";
+      reply.status(400).send({ error: message });
+    }
+  });
+
+  /**
+   * POST /governance/execute-queued
+   * Execute a queued proposal after its timelock has elapsed. Anyone can call.
+   */
+  fastify.post("/governance/execute-queued", async (request, reply) => {
+    try {
+      const body = proposalIdSchema.parse(request.body);
+
+      const result = await buildContractTx(
+        server,
+        govContractId,
+        "execute_queued",
+        [nativeToScVal(BigInt(body.proposalId), { type: "u64" })],
+        body.userAddress
+      );
+
+      const dbProposal = await prisma.governanceProposal.findFirst({
+        where: { id: body.proposalId + 1 },
+      });
+      if (dbProposal) {
+        await prisma.governanceProposal.update({
+          where: { id: dbProposal.id },
+          data: { status: "executed" },
+        });
+        await applyGovernanceParam(dbProposal.paramKey, dbProposal.newValue);
+      }
+
+      return result;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : "Execute queued failed";
       reply.status(400).send({ error: message });
     }
   });
@@ -313,16 +406,33 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
             const votesForBig = BigInt(voteCount?.[0] ?? 0);
             const votesAgainstBig = BigInt(voteCount?.[1] ?? 0);
             let status = "active";
+            let timelockEta: number | null = null;
+
             if (proposal.executed) {
               status = "executed";
+            } else if (proposal.queued) {
+              // Fetch timelock entry for eta
+              try {
+                const entry = await queryContractView(
+                  server,
+                  govContractId,
+                  "get_timelock_entry",
+                  [nativeToScVal(BigInt(i), { type: "u64" })]
+                );
+                if (entry?.cancelled) {
+                  status = "cancelled";
+                } else {
+                  status = "queued";
+                  timelockEta = entry?.eta_ledger ?? null;
+                }
+              } catch {
+                status = "queued";
+              }
             } else if (endLedger > 0) {
-              // Check if voting period ended by comparing with latest ledger
-              // We can't easily get current ledger here, so use a time estimate:
-              // If proposal has end_ledger and start_ledger, check time elapsed
               const startLedger = proposal.start_ledger ?? 0;
               const votingPeriod = endLedger - startLedger;
               const elapsedMs = Date.now() - (proposal.created_at ? new Date(proposal.created_at).getTime() : Date.now());
-              const expectedDurationMs = votingPeriod * 5 * 1000; // ~5s per ledger
+              const expectedDurationMs = votingPeriod * 5 * 1000;
               if (elapsedMs > expectedDurationMs) {
                 status = votesForBig > votesAgainstBig ? "passed" : "rejected";
               }
@@ -338,6 +448,8 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
               startLedger: proposal.start_ledger ?? 0,
               endLedger: endLedger,
               executed: proposal.executed ?? false,
+              queued: proposal.queued ?? false,
+              timelockEta,
               status,
             });
 

@@ -37,14 +37,16 @@ import {
 const KEEPER_INTERVAL_MS = 6 * 60 * 60 * 1000;      // 6 hours
 const TTL_BUMP_INTERVAL_MS = 24 * 60 * 60 * 1000;    // 24 hours
 const RECALIBRATE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const TIMELOCK_POLL_INTERVAL_MS = 30 * 60 * 1000;    // 30 minutes
 
-const TREASURY_RECYCLE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const TREASURY_RECYCLE_THRESHOLD = BigInt(100_0000000);   // 100 XLM in stroops
+const TREASURY_RECYCLE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const TREASURY_RECYCLE_THRESHOLD = BigInt(100_0000000);
 
 let keeperInterval: ReturnType<typeof setInterval> | null = null;
 let ttlInterval: ReturnType<typeof setInterval> | null = null;
 let recalibrateInterval: ReturnType<typeof setInterval> | null = null;
 let treasuryRecycleInterval: ReturnType<typeof setInterval> | null = null;
+let timelockPollInterval: ReturnType<typeof setInterval> | null = null;
 
 export class KeeperBot {
   private server: rpc.Server;
@@ -100,6 +102,15 @@ export class KeeperBot {
       }
     }, TREASURY_RECYCLE_INTERVAL_MS);
 
+    // Schedule timelock execution polling every 30 minutes
+    timelockPollInterval = setInterval(async () => {
+      try {
+        await this.executeMaturedTimelocks();
+      } catch (err) {
+        console.error("[KeeperBot] Timelock poll error:", err);
+      }
+    }, TIMELOCK_POLL_INTERVAL_MS);
+
     console.log(
       `[KeeperBot] Running — harvest every ${KEEPER_INTERVAL_MS / 3_600_000}h, TTL bump every ${TTL_BUMP_INTERVAL_MS / 3_600_000}h`
     );
@@ -110,6 +121,7 @@ export class KeeperBot {
     if (ttlInterval) { clearInterval(ttlInterval); ttlInterval = null; }
     if (recalibrateInterval) { clearInterval(recalibrateInterval); recalibrateInterval = null; }
     if (treasuryRecycleInterval) { clearInterval(treasuryRecycleInterval); treasuryRecycleInterval = null; }
+    if (timelockPollInterval) { clearInterval(timelockPollInterval); timelockPollInterval = null; }
     console.log("[KeeperBot] Shut down");
   }
 
@@ -314,7 +326,83 @@ export class KeeperBot {
   }
 
   // ============================================================
-  // Helpers
+  // Timelock execution: auto-execute queued proposals whose delay has elapsed
+  // ============================================================
+
+  async executeMaturedTimelocks(): Promise<void> {
+    const govContractId = config.contracts.governanceContractId;
+
+    // Get total proposal count
+    const countRaw = await this.simulateView(govContractId, "proposal_count", []);
+    const count = Number(countRaw ?? 0);
+    if (count === 0) return;
+
+    // Get current ledger sequence
+    const keypair = Keypair.fromSecret(config.admin.secretKey);
+    const account = await this.server.getAccount(keypair.publicKey());
+    const currentLedger = account.sequenceNumber
+      ? Number(account.sequenceNumber)
+      : 0;
+
+    for (let i = 0; i < Math.min(count, 100); i++) {
+      try {
+        const proposal = await this.simulateView(govContractId, "get_proposal", [
+          nativeToScVal(BigInt(i), { type: "u64" }),
+        ]) as any;
+
+        if (!proposal || proposal.executed || !proposal.queued) continue;
+
+        const entry = await this.simulateView(govContractId, "get_timelock_entry", [
+          nativeToScVal(BigInt(i), { type: "u64" }),
+        ]) as any;
+
+        if (!entry || entry.cancelled) continue;
+
+        const eta = Number(entry.eta_ledger ?? 0);
+        if (currentLedger < eta) continue;
+
+        console.log(`[KeeperBot] Executing matured timelock for proposal ${i} (eta=${eta}, current=${currentLedger})`);
+
+        await this.executeAdminCall(govContractId, "execute_queued", [
+          nativeToScVal(BigInt(i), { type: "u64" }),
+        ]);
+
+        // Apply the parameter change
+        const paramKey = String(entry.param_key ?? "");
+        const newValue = String(entry.new_value ?? "");
+        if (paramKey) {
+          await this.applyGovernanceParam(paramKey, newValue);
+        }
+
+        console.log(`[KeeperBot] Proposal ${i} executed: ${paramKey} = ${newValue}`);
+      } catch (err) {
+        console.warn(`[KeeperBot] Could not process timelock for proposal ${i}:`, err);
+      }
+    }
+  }
+
+  private async applyGovernanceParam(paramKey: string, newValue: string): Promise<void> {
+    const value = parseInt(newValue, 10);
+    if (isNaN(value)) return;
+
+    const { callSetCooldownPeriod, callUpdateCollateralFactor, callUpdateBorrowRate, callUpdateLiquidationThreshold, callSetLpProtocolFeeBps } =
+      await import("../staking-engine/contractClient.js");
+
+    try {
+      switch (paramKey) {
+        case "cooldown_period":       await callSetCooldownPeriod(value); break;
+        case "collateral_factor":     await callUpdateCollateralFactor(value); break;
+        case "borrow_rate_bps":       await callUpdateBorrowRate(value); break;
+        case "liquidation_threshold": await callUpdateLiquidationThreshold(value); break;
+        case "lp_protocol_fee_bps":   await callSetLpProtocolFeeBps(value); break;
+        default:
+          console.log(`[KeeperBot] Param "${paramKey}" is governance-only, no contract call needed`);
+      }
+    } catch (err) {
+      console.error(`[KeeperBot] Failed to apply param "${paramKey}":`, err);
+    }
+  }
+
   // ============================================================
 
   private async simulateView(

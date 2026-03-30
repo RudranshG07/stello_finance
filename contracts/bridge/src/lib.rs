@@ -22,8 +22,8 @@ pub enum DataKey {
     Relayer,
     SxlmToken,
     Paused,
-    Nonce(Address),              // per-user outbound nonce
-    ProcessedNonce(Bytes),       // inbound EVM tx hash → bool
+    Nonce(Address),        // per-user outbound nonce
+    ProcessedNonce(Bytes), // inbound EVM tx hash → bool
     TotalLocked,
     MinBridgeAmount,
 }
@@ -32,7 +32,7 @@ pub enum DataKey {
 #[contracttype]
 pub struct BridgeInitiatedEvent {
     pub sender: Address,
-    pub evm_recipient: Bytes,   // 20-byte EVM address
+    pub evm_recipient: Bytes, // 20-byte EVM address
     pub amount: i128,
     pub nonce: u64,
     pub target_chain_id: u32,
@@ -41,7 +41,7 @@ pub struct BridgeInitiatedEvent {
 // ---------- sXLM token interface (cross-contract call) ----------
 mod sxlm_token {
     use soroban_sdk::{contractclient, Address, Env};
-    
+
     #[allow(dead_code)]
     #[contractclient(name = "SxlmTokenClient")]
     pub trait SxlmToken {
@@ -175,7 +175,9 @@ impl BridgeAdapter {
 
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Relayer, &relayer);
-        env.storage().instance().set(&DataKey::SxlmToken, &sxlm_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::SxlmToken, &sxlm_token);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage()
             .instance()
@@ -526,7 +528,7 @@ mod test {
     }
 
     #[test]
-#[should_panic(expected = "already processed")]
+    #[should_panic(expected = "already processed")]
     fn test_release_replay_protection() {
         let env = Env::default();
         env.mock_all_auths();

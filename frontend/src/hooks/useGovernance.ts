@@ -12,6 +12,8 @@ interface Proposal {
   votesAgainst: string;
   status: string;
   executed: boolean;
+  queued: boolean;
+  timelockEta?: number | null;
   startLedger?: number;
   endLedger?: number;
   expiresAt?: string;
@@ -32,6 +34,9 @@ interface UseGovernanceReturn {
   lastTxHash: string | null;
   createProposal: (paramKey: string, newValue: string) => Promise<boolean>;
   vote: (proposalId: number, support: boolean) => Promise<boolean>;
+  queueProposal: (proposalId: number) => Promise<boolean>;
+  cancelProposal: (proposalId: number) => Promise<boolean>;
+  executeQueued: (proposalId: number) => Promise<boolean>;
   executeProposal: (proposalId: number) => Promise<boolean>;
   clearError: () => void;
   refresh: () => Promise<void>;
@@ -131,6 +136,21 @@ export function useGovernance(): UseGovernanceReturn {
     [submitGovTx]
   );
 
+  const queueProposal = useCallback(
+    (proposalId: number) => submitGovTx('queue', { proposalId }),
+    [submitGovTx]
+  );
+
+  const cancelProposal = useCallback(
+    (proposalId: number) => submitGovTx('cancel', { proposalId }),
+    [submitGovTx]
+  );
+
+  const executeQueued = useCallback(
+    (proposalId: number) => submitGovTx('execute-queued', { proposalId }),
+    [submitGovTx]
+  );
+
   const executeProposal = useCallback(
     (proposalId: number) => submitGovTx('execute', { proposalId }),
     [submitGovTx]
@@ -145,6 +165,9 @@ export function useGovernance(): UseGovernanceReturn {
     lastTxHash,
     createProposal,
     vote,
+    queueProposal,
+    cancelProposal,
+    executeQueued,
     executeProposal,
     clearError,
     refresh: fetchData,

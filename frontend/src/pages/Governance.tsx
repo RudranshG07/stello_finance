@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Vote, Plus, Clock, CheckCircle, XCircle } from 'lucide-react';
+import { Vote, Plus, Clock, CheckCircle, XCircle, Timer, Ban } from 'lucide-react';
 import { useWallet } from '../hooks/useWallet';
 import { useGovernance } from '../hooks/useGovernance';
 import { formatAddress } from '../utils/stellar';
@@ -15,6 +15,9 @@ export default function Governance() {
     lastTxHash,
     createProposal,
     vote,
+    queueProposal,
+    cancelProposal,
+    executeQueued,
     executeProposal,
     clearError,
   } = useGovernance();
@@ -38,6 +41,21 @@ export default function Governance() {
     await vote(proposalId, support);
   };
 
+  const handleQueue = async (proposalId: number) => {
+    clearError();
+    await queueProposal(proposalId);
+  };
+
+  const handleCancel = async (proposalId: number) => {
+    clearError();
+    await cancelProposal(proposalId);
+  };
+
+  const handleExecuteQueued = async (proposalId: number) => {
+    clearError();
+    await executeQueued(proposalId);
+  };
+
   const handleExecute = async (proposalId: number) => {
     clearError();
     await executeProposal(proposalId);
@@ -51,6 +69,10 @@ export default function Governance() {
         return <span className="px-2 py-1 rounded-full text-xs bg-green-500/20 text-green-400 border border-green-500/30">Passed</span>;
       case 'rejected':
         return <span className="px-2 py-1 rounded-full text-xs bg-red-500/20 text-red-400 border border-red-500/30">Rejected</span>;
+      case 'queued':
+        return <span className="px-2 py-1 rounded-full text-xs bg-blue-500/20 text-blue-400 border border-blue-500/30">Queued (Timelock)</span>;
+      case 'cancelled':
+        return <span className="px-2 py-1 rounded-full text-xs bg-gray-500/20 text-gray-400 border border-gray-500/30">Cancelled</span>;
       case 'executed':
         return <span className="px-2 py-1 rounded-full text-xs bg-purple-500/20 text-purple-400 border border-purple-500/30">Executed</span>;
       default:
@@ -254,15 +276,45 @@ export default function Governance() {
                   </div>
                 )}
 
-                {/* Execute button: only show for passed proposals (voting ended, not yet executed) */}
-                {proposal.status === 'passed' && !proposal.executed && isConnected && (
+                {/* Queue into timelock: passed proposals not yet queued */}
+                {proposal.status === 'passed' && !proposal.queued && !proposal.executed && isConnected && (
                   <button
-                    onClick={() => handleExecute(proposal.id)}
+                    onClick={() => handleQueue(proposal.id)}
                     disabled={isSubmitting}
-                    className="w-full py-2 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20 transition-colors text-sm font-medium disabled:opacity-40"
+                    className="w-full py-2 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-colors text-sm font-medium disabled:opacity-40 flex items-center justify-center gap-2"
                   >
-                    {isSubmitting ? 'Executing...' : 'Execute Proposal'}
+                    <Timer className="w-4 h-4" />
+                    {isSubmitting ? 'Queuing...' : 'Queue (Enter 48h Timelock)'}
                   </button>
+                )}
+
+                {/* Timelock status + execute/cancel */}
+                {proposal.status === 'queued' && isConnected && (
+                  <div className="space-y-2">
+                    {proposal.timelockEta != null && (
+                      <p className="text-xs text-blue-400 flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        Executable after ledger {proposal.timelockEta}
+                      </p>
+                    )}
+                    <div className="flex gap-3">
+                      <button
+                        onClick={() => handleExecuteQueued(proposal.id)}
+                        disabled={isSubmitting}
+                        className="flex-1 py-2 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20 hover:bg-purple-500/20 transition-colors text-sm font-medium disabled:opacity-40"
+                      >
+                        {isSubmitting ? '...' : 'Execute'}
+                      </button>
+                      <button
+                        onClick={() => handleCancel(proposal.id)}
+                        disabled={isSubmitting}
+                        className="flex-1 py-2 rounded-xl bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors text-sm font-medium disabled:opacity-40 flex items-center justify-center gap-1"
+                      >
+                        <Ban className="w-3 h-3" />
+                        {isSubmitting ? '...' : 'Cancel (Guardian)'}
+                      </button>
+                    </div>
+                  </div>
                 )}
               </div>
             );

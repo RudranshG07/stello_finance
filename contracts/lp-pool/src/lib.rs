@@ -6,9 +6,9 @@ const BPS_DENOMINATOR: i128 = 10_000;
 
 // ---------- TTL constants ----------
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400;        // bump to ~30 days
-const LP_LIFETIME_THRESHOLD: u32 = 518_400;       // ~30 days
-const LP_BUMP_AMOUNT: u32 = 3_110_400;            // bump to ~180 days
+const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
+const LP_LIFETIME_THRESHOLD: u32 = 518_400; // ~30 days
+const LP_BUMP_AMOUNT: u32 = 3_110_400; // bump to ~180 days
 
 #[derive(Clone)]
 #[contracttype]
@@ -60,10 +60,7 @@ fn read_native_token(env: &Env) -> Address {
 }
 
 fn read_fee_bps(env: &Env) -> i128 {
-    env.storage()
-        .instance()
-        .get(&DataKey::FeeBps)
-        .unwrap_or(30) // 0.3%
+    env.storage().instance().get(&DataKey::FeeBps).unwrap_or(30) // 0.3%
 }
 
 fn read_admin(env: &Env) -> Address {
@@ -116,15 +113,25 @@ impl LpPoolContract {
         native_token: Address,
         fee_bps: u32,
     ) {
-        let already: bool = env.storage().instance().get(&DataKey::Initialized).unwrap_or(false);
+        let already: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Initialized)
+            .unwrap_or(false);
         if already {
             panic!("already initialized");
         }
         env.storage().instance().set(&DataKey::Initialized, &true);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::SxlmToken, &sxlm_token);
-        env.storage().instance().set(&DataKey::NativeToken, &native_token);
-        env.storage().instance().set(&DataKey::FeeBps, &(fee_bps as i128));
+        env.storage()
+            .instance()
+            .set(&DataKey::SxlmToken, &sxlm_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::NativeToken, &native_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeBps, &(fee_bps as i128));
         write_i128(&env, &DataKey::ProtocolFeeBps, 5); // 0.05% of swap input
         write_i128(&env, &DataKey::AccruedProtocolFees, 0);
         extend_instance(&env);
@@ -146,7 +153,10 @@ impl LpPoolContract {
     /// Only transfers the proportional amounts needed; excess stays with the user.
     pub fn add_liquidity(env: Env, user: Address, xlm_amount: i128, sxlm_amount: i128) -> i128 {
         user.require_auth();
-        assert!(xlm_amount > 0 && sxlm_amount > 0, "amounts must be positive");
+        assert!(
+            xlm_amount > 0 && sxlm_amount > 0,
+            "amounts must be positive"
+        );
         extend_instance(&env);
 
         let reserve_xlm = read_i128(&env, &DataKey::ReserveXlm);
@@ -177,8 +187,16 @@ impl LpPoolContract {
         // Only transfer the amounts actually needed (no excess taken)
         let native = read_native_token(&env);
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &native).transfer(&user, &env.current_contract_address(), &actual_xlm);
-        token::Client::new(&env, &sxlm).transfer(&user, &env.current_contract_address(), &actual_sxlm);
+        token::Client::new(&env, &native).transfer(
+            &user,
+            &env.current_contract_address(),
+            &actual_xlm,
+        );
+        token::Client::new(&env, &sxlm).transfer(
+            &user,
+            &env.current_contract_address(),
+            &actual_sxlm,
+        );
 
         // Update state with actual amounts
         write_i128(&env, &DataKey::ReserveXlm, reserve_xlm + actual_xlm);
@@ -223,7 +241,11 @@ impl LpPoolContract {
         // Transfer tokens out
         let native = read_native_token(&env);
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &native).transfer(&env.current_contract_address(), &user, &xlm_out);
+        token::Client::new(&env, &native).transfer(
+            &env.current_contract_address(),
+            &user,
+            &xlm_out,
+        );
         token::Client::new(&env, &sxlm).transfer(&env.current_contract_address(), &user, &sxlm_out);
 
         env.events().publish(
@@ -248,14 +270,22 @@ impl LpPoolContract {
         assert!(reserve_xlm > 0 && reserve_sxlm > 0, "pool has no liquidity");
 
         // x * y = k → sxlm_out = reserve_sxlm - k / (reserve_xlm + amount_after_fee)
-        let sxlm_out = reserve_sxlm - (reserve_xlm * reserve_sxlm) / (reserve_xlm + amount_after_fee);
-        assert!(sxlm_out > 0 && sxlm_out < reserve_sxlm, "insufficient liquidity");
+        let sxlm_out =
+            reserve_sxlm - (reserve_xlm * reserve_sxlm) / (reserve_xlm + amount_after_fee);
+        assert!(
+            sxlm_out > 0 && sxlm_out < reserve_sxlm,
+            "insufficient liquidity"
+        );
         assert!(sxlm_out >= min_out, "slippage: output below minimum");
 
         // Transfer
         let native = read_native_token(&env);
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &native).transfer(&user, &env.current_contract_address(), &xlm_amount);
+        token::Client::new(&env, &native).transfer(
+            &user,
+            &env.current_contract_address(),
+            &xlm_amount,
+        );
         token::Client::new(&env, &sxlm).transfer(&env.current_contract_address(), &user, &sxlm_out);
 
         // Protocol fee: carve out a portion of the LP fee for the protocol
@@ -264,7 +294,11 @@ impl LpPoolContract {
         let protocol_cut = total_fee * protocol_fee_bps / fee_bps;
 
         // Reserve gets full amount MINUS protocol cut
-        write_i128(&env, &DataKey::ReserveXlm, reserve_xlm + xlm_amount - protocol_cut);
+        write_i128(
+            &env,
+            &DataKey::ReserveXlm,
+            reserve_xlm + xlm_amount - protocol_cut,
+        );
         write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm - sxlm_out);
 
         // Accumulate protocol fees
@@ -292,15 +326,27 @@ impl LpPoolContract {
         let reserve_sxlm = read_i128(&env, &DataKey::ReserveSxlm);
         assert!(reserve_xlm > 0 && reserve_sxlm > 0, "pool has no liquidity");
 
-        let xlm_out = reserve_xlm - (reserve_xlm * reserve_sxlm) / (reserve_sxlm + amount_after_fee);
-        assert!(xlm_out > 0 && xlm_out < reserve_xlm, "insufficient liquidity");
+        let xlm_out =
+            reserve_xlm - (reserve_xlm * reserve_sxlm) / (reserve_sxlm + amount_after_fee);
+        assert!(
+            xlm_out > 0 && xlm_out < reserve_xlm,
+            "insufficient liquidity"
+        );
         assert!(xlm_out >= min_out, "slippage: output below minimum");
 
         // Transfer
         let native = read_native_token(&env);
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &sxlm).transfer(&user, &env.current_contract_address(), &sxlm_amount);
-        token::Client::new(&env, &native).transfer(&env.current_contract_address(), &user, &xlm_out);
+        token::Client::new(&env, &sxlm).transfer(
+            &user,
+            &env.current_contract_address(),
+            &sxlm_amount,
+        );
+        token::Client::new(&env, &native).transfer(
+            &env.current_contract_address(),
+            &user,
+            &xlm_out,
+        );
 
         // Update reserves
         write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm + sxlm_amount);
@@ -330,14 +376,16 @@ impl LpPoolContract {
         }
 
         let native = read_native_token(&env);
-        token::Client::new(&env, &native).transfer(&env.current_contract_address(), &admin, &accrued);
+        token::Client::new(&env, &native).transfer(
+            &env.current_contract_address(),
+            &admin,
+            &accrued,
+        );
 
         write_i128(&env, &DataKey::AccruedProtocolFees, 0);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("pf_col"),),
-            (admin, accrued),
-        );
+        env.events()
+            .publish((soroban_sdk::symbol_short!("pf_col"),), (admin, accrued));
 
         accrued
     }
@@ -409,8 +457,12 @@ mod test {
         let admin = Address::generate(&env);
         let user = Address::generate(&env);
 
-        let sxlm_id = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
-        let native_id = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(Address::generate(&env))
+            .address();
 
         let contract_id = env.register_contract(None, LpPoolContract);
         let client = LpPoolContractClient::new(&env, &contract_id);
