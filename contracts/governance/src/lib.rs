@@ -205,6 +205,7 @@ impl GovernanceContract {
         sxlm_token: Address,
         voting_period_ledgers: u32,
         quorum_bps: u32,
+        delay_ledgers: u32,
     ) {
         let already: bool = env
             .storage()
@@ -233,6 +234,24 @@ impl GovernanceContract {
         env.storage()
             .instance()
             .set(&DataKey::TimelockDelay, &delay_ledgers);
+    }
+
+    /// Set the timelock delay (in ledgers). Only callable by admin.
+    pub fn set_timelock_delay(env: Env, delay_ledgers: u32) {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        extend_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::TimelockDelay, &delay_ledgers);
+    }
+
+    /// Set the guardian address. Only callable by admin.
+    pub fn set_guardian(env: Env, guardian: Address) {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        extend_instance(&env);
+        env.storage().instance().set(&DataKey::Guardian, &guardian);
     }
 
     /// Upgrade the contract WASM. Only callable by admin.
@@ -593,7 +612,7 @@ mod test {
         let contract_id = env.register_contract(None, GovernanceContract);
 
         let client = GovernanceContractClient::new(&env, &contract_id);
-        client.initialize(&admin, &sxlm_id, &100, &1000); // 100 ledgers voting, 10% quorum
+        client.initialize(&admin, &sxlm_id, &100, &1000, &34560); // 100 ledgers voting, 10% quorum, ~48hr delay
 
         let sxlm_admin = StellarAssetClient::new(&env, &sxlm_id);
         sxlm_admin.mint(&proposer, &10_000_0000000);
