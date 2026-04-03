@@ -76,7 +76,7 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
   });
 
   // ── Centralized error handler ───────────────────────────────────────────
-  fastify.setErrorHandler((error: Error & { statusCode?: number; validation?: unknown; cause?: unknown }, request, reply) => {
+  fastify.setErrorHandler((error: import('@fastify/error').FastifyError, request, reply) => {
     const requestId =
       (request as FastifyRequest & { requestId?: string }).requestId ??
       crypto.randomUUID();
@@ -95,8 +95,8 @@ export function registerErrorHandling(fastify: FastifyInstance): void {
     }
 
     // Fastify wraps Zod errors in its own error object sometimes
-    if (error.validation || error.cause instanceof ZodError) {
-      const zodErr = error.cause as ZodError | undefined;
+    if (error.validation || (error as any).cause instanceof ZodError) {
+      const zodErr = (error as any).cause as ZodError | undefined;
       const response: ApiErrorResponse = {
         error: "Validation failed",
         code: "VALIDATION_ERROR",
