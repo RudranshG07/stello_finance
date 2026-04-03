@@ -29,6 +29,8 @@ import {
   rawAmountToDisplay,
 } from "./index.js";
 
+// ... type definitions go here (OracleRow, LiquidityMiningProgramRow, etc) ...
+
 const READ_ONLY_SIMULATION_ACCOUNT = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
 
 type OracleRow = {
@@ -107,7 +109,6 @@ export class DexIntegrationService {
       this.queryContractView("get_reserves", []),
       this.queryContractView("total_lp_supply", []),
     ]);
-
     return {
       reserveXlmRaw: asBigInt(reserves?.[0] ?? 0),
       reserveSxlmRaw: asBigInt(reserves?.[1] ?? 0),
@@ -498,7 +499,7 @@ export class DexIntegrationService {
 
     for (const proposal of executedProposals) {
       await this.applyLiquidityMiningProposal(
-        proposal.id,
+        proposal.id, // <-- The only required fix: use proposal.id, not chainProposalId
         proposal.paramKey,
         proposal.newValue
       );
