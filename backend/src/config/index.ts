@@ -56,19 +56,6 @@ export const config = {
       "GOVERNANCE_CONTRACT_ID",
       "CB7LV3FBQ7US26GVC7SM7RMX22IEEHAEUL7V3TDDWM32DHA5TDFDDEP4"
     ),
-    // Additional collateral asset contract IDs (Stellar Soroban SAC addresses)
-    usdcContractId: requireEnv(
-      "USDC_CONTRACT_ID",
-      "CCW67TSZV3SSS2HXMBQ5JFGCKJNXKZM7UQUWUZPUTHXSTZLEO7EJJUD"
-    ),
-    eurcContractId: requireEnv(
-      "EURC_CONTRACT_ID",
-      "GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP"
-    ),
-    yxlmContractId: requireEnv(
-      "YXLM_CONTRACT_ID",
-      "GARDNV3Q7YGT4AKSDF25LT32YSCCW4EV22Y2TV3I2PU2MMXJTEDL5T55"
-    ),
   },
 
   server: {

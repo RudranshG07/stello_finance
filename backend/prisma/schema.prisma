@@ -74,31 +74,15 @@ model ProtocolMetrics {
 }
 
 model CollateralPosition {
-  id               Int               @id @default(autoincrement())
-  wallet           String
-  sxlmDeposited    BigInt            @default(0) // legacy field; now holds total collateral value in XLM-stroops
-  xlmBorrowed      BigInt
-  healthFactor     Float
-  updatedAt        DateTime          @default(now())
-  collateralAssets CollateralAsset[]
+  id            Int      @id @default(autoincrement())
+  wallet        String
+  sxlmDeposited BigInt
+  xlmBorrowed   BigInt
+  healthFactor  Float
+  updatedAt     DateTime @default(now())
 
   @@index([wallet])
   @@map("collateral_positions")
-}
-
-/// Per-asset collateral breakdown linked to a CollateralPosition.
-model CollateralAsset {
-  id           Int                @id @default(autoincrement())
-  positionId   Int
-  assetAddress String
-  assetSymbol  String
-  amount       BigInt
-  updatedAt    DateTime           @default(now())
-  position     CollateralPosition @relation(fields: [positionId], references: [id], onDelete: Cascade)
-
-  @@unique([positionId, assetAddress])
-  @@index([positionId])
-  @@map("collateral_assets")
 }
 
 model LPPosition {

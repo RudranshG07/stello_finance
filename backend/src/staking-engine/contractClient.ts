@@ -634,15 +634,15 @@ async function pollTransaction(
 }
 
 /**
- * Sync the sXLM→XLM price to the lending contract.
- * The lending contract now uses per-asset prices via `update_asset_price(asset, price_in_xlm)`.
+ * Sync the staking exchange rate to the lending contract.
+ * The lending contract stores its own ExchangeRate (sXLM→XLM, scaled by 1e7).
  * Call this after every reward distribution or snapshot to keep health factors current.
  *
  * rate: exchange rate from computeExchangeRate() (e.g. 1.0042)
- * The contract expects RATE_PRECISION = 1e7 scaling, so 1.0042 → 10_042_000
+ * The lending contract expects RATE_PRECISION = 1e7 scaling, so 1.0042 → 10_042_000
  */
 export async function callUpdateLendingExchangeRate(rate: number): Promise<void> {
-  // rate is the sXLM→XLM price as a float (e.g. 1.0042)
+  // rate is in XLM-per-sXLM float (e.g. 1.0042)
   // Contract expects i128 scaled by RATE_PRECISION = 10_000_000
   const scaledRate = BigInt(Math.round(rate * 10_000_000));
 
@@ -654,10 +654,8 @@ export async function callUpdateLendingExchangeRate(rate: number): Promise<void>
   const { keypair, account } = await getSourceAccount();
   const contract = getLendingContract();
 
-  // update_asset_price(asset: Address, price_in_xlm: i128)
   const op = contract.call(
-    "update_asset_price",
-    new Address(config.contracts.sxlmTokenContractId).toScVal(),
+    "update_exchange_rate",
     nativeToScVal(scaledRate, { type: "i128" })
   );
 
@@ -677,7 +675,9 @@ export async function callUpdateLendingExchangeRate(rate: number): Promise<void>
     throw new Error(`callUpdateLendingExchangeRate failed: ${JSON.stringify(result.errorResult)}`);
   }
 
-  // update_asset_price returns void. Poll raw RPC to avoid XDR parsing issues on void returns.
+  // update_exchange_rate returns void. server.getTransaction() tries to parse
+  // the XDR return value and throws "Bad union switch" on void returns.
+  // Use the raw RPC endpoint instead to poll just the status field.
   const rpcUrl = config.stellar.rpcUrl;
   let attempts = 0;
   while (attempts < 30) {
@@ -692,9 +692,9 @@ export async function callUpdateLendingExchangeRate(rate: number): Promise<void>
     const json = (await resp.json()) as { result?: { status: string } };
     const status = json.result?.status;
     if (status === "SUCCESS") break;
-    if (status === "FAILED") throw new Error(`update_asset_price tx failed: ${result.hash}`);
+    if (status === "FAILED") throw new Error(`update_exchange_rate tx failed: ${result.hash}`);
     await new Promise((r) => setTimeout(r, 2000));
     attempts++;
   }
-  console.log(`[contractClient] sXLM lending price updated: ${rate.toFixed(7)} (${scaledRate})`);
+  console.log(`[contractClient] Lending exchange rate updated: ${rate.toFixed(7)} (${scaledRate})`);
 }
