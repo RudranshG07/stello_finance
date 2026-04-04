@@ -416,6 +416,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "queued"
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "start_ledger"
                       },
                       "val": {
@@ -603,6 +611,18 @@
                         },
                         "val": {
                           "address": "CDLDVFKHEZ2RVB3NG4UQA4VPD3TSHV6XMHXMHP2BSGCJ2IIWVTOHGDSG"
+                        }
+                      },
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "TimelockDelay"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "u32": 34560
                         }
                       },
                       {
