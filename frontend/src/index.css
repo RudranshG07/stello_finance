@@ -1,0 +1,224 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Dashboard animations ─────────────────────────────────────────────────── */
+
+@keyframes lido-reveal {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes lido-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes stellar-rotate {
+  0%   { transform: perspective(600px) rotateY(0deg)   rotateX(6deg); }
+  100% { transform: perspective(600px) rotateY(360deg) rotateX(6deg); }
+}
+
+@keyframes stellar-float {
+  0%, 100% { transform: translateY(0px); }
+  50%       { transform: translateY(-10px); }
+}
+
+@keyframes yellow-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+.lido-reveal { animation: lido-reveal 0.6s cubic-bezier(0.16, 1, 0.3, 1) both; }
+.lido-fade   { animation: lido-fade 0.7s ease both; }
+
+/* ── Responsive grids ────────────────────────────────────────────────────── */
+.lido-hero-grid  { display: grid; grid-template-columns: 1fr 380px; gap: 48px; align-items: center; }
+.lido-two-col    { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: start; }
+.lido-four-cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; }
+.lido-stat-strip { display: flex; align-items: stretch; border-left: 1px solid #1e1e1e; }
+
+@media (max-width: 1000px) {
+  .lido-hero-grid  { grid-template-columns: 1fr; }
+  .lido-two-col    { grid-template-columns: 1fr; gap: 32px; }
+  .lido-four-cards { grid-template-columns: 1fr 1fr; }
+  .lido-stat-strip { flex-wrap: wrap; }
+}
+@media (max-width: 600px) {
+  .lido-four-cards { grid-template-columns: 1fr; }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-black text-white font-sans;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Yellow scrollbar */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-black;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(245, 207, 0, 0.4);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(245, 207, 0, 0.7);
+  }
+
+  /* Global yellow focus ring */
+  *:focus-visible {
+    outline: 2px solid #F5CF00;
+    outline-offset: 2px;
+  }
+
+  /* Remove default number input arrows */
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+  }
+}
+
+@layer components {
+  /* ── Cards ──────────────────────────────────────────────────────────────── */
+  .card {
+    @apply border border-border rounded-xl;
+    background: rgba(10,10,10,0.88);
+    backdrop-filter: blur(8px);
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .card:hover {
+    border-color: rgba(245, 207, 0, 0.12);
+    box-shadow: 0 0 20px rgba(245, 207, 0, 0.04);
+  }
+
+  /* ── Buttons ─────────────────────────────────────────────────────────────── */
+
+  /* Primary: yellow bg · black text */
+  .btn {
+    @apply px-5 py-2.5 rounded-lg font-semibold text-sm
+           transition-all duration-150
+           disabled:opacity-40 disabled:cursor-not-allowed;
+    background: #F5CF00;
+    color: #000;
+  }
+  .btn:hover:not(:disabled) {
+    background: #D4A800;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(245, 207, 0, 0.25);
+  }
+  .btn:active:not(:disabled) {
+    background: #A38200;
+    transform: translateY(0);
+    box-shadow: none;
+  }
+
+  /* Outline: white/15 border · white text · hover → yellow */
+  .btn-outline {
+    @apply px-5 py-2.5 bg-transparent rounded-lg font-medium text-sm
+           border transition-all duration-150
+           disabled:opacity-40 disabled:cursor-not-allowed;
+    border-color: rgba(255,255,255,0.15);
+    color: rgba(255,255,255,0.8);
+  }
+  .btn-outline:hover:not(:disabled) {
+    border-color: #F5CF00;
+    color: #F5CF00;
+  }
+
+  /* Ghost: transparent · muted text · hover → white */
+  .btn-ghost {
+    @apply px-5 py-2.5 bg-transparent text-neutral-500 rounded-lg font-medium text-sm
+           transition-colors duration-150
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    @apply text-white;
+  }
+
+  /* ── Inputs ──────────────────────────────────────────────────────────────── */
+  .input {
+    @apply w-full px-4 py-3 border rounded-lg
+           text-white placeholder-neutral-700
+           transition-all duration-150 text-sm;
+    background: rgba(6,6,6,0.9);
+    border-color: #1e1e1e;
+  }
+  .input:focus {
+    outline: none;
+    border-color: #F5CF00;
+    box-shadow: 0 0 0 3px rgba(245, 207, 0, 0.08);
+  }
+
+  /* ── Labels ──────────────────────────────────────────────────────────────── */
+  .label {
+    @apply text-xs text-neutral-500 mb-1 block;
+  }
+
+  /* ── Stat display ────────────────────────────────────────────────────────── */
+  .stat-value {
+    @apply text-xl font-semibold text-white;
+  }
+
+  .stat-label {
+    @apply text-xs text-neutral-500 uppercase tracking-wider;
+  }
+
+  /* ── Glass ───────────────────────────────────────────────────────────────── */
+  .glass {
+    @apply backdrop-blur-sm border;
+    background: rgba(255,255,255,0.03);
+    border-color: rgba(255,255,255,0.08);
+  }
+
+  /* ── Yellow tag/badge ────────────────────────────────────────────────────── */
+  .tag-yellow {
+    @apply text-xs font-medium px-2 py-0.5 rounded;
+    color: #F5CF00;
+    background: rgba(245, 207, 0, 0.1);
+    border: 1px solid rgba(245, 207, 0, 0.2);
+  }
+
+  /* ── Success/Error banners ───────────────────────────────────────────────── */
+  .banner-success {
+    @apply rounded-lg p-3;
+    border: 1px solid rgba(74, 222, 128, 0.2);
+    background: rgba(74, 222, 128, 0.05);
+  }
+
+  .banner-error {
+    @apply rounded-lg p-3;
+    border: 1px solid rgba(248, 113, 113, 0.2);
+    background: rgba(248, 113, 113, 0.05);
+  }
+
+  .banner-warning {
+    @apply rounded-lg p-3;
+    border: 1px solid rgba(245, 207, 0, 0.2);
+    background: rgba(245, 207, 0, 0.04);
+  }
+
+  /* ── Divider ─────────────────────────────────────────────────────────────── */
+  .divider {
+    @apply border-t border-border;
+  }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}

@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "sxlm-token",
+    "staking",
+    "lending",
+    "lp-pool",
+    "governance",
+    "bridge",
+]
+
+[workspace.dependencies]
+soroban-sdk = "21.7.6"
+soroban-token-sdk = "21.7.6"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
