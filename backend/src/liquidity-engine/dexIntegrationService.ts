@@ -498,9 +498,7 @@ export class DexIntegrationService {
 
     for (const proposal of executedProposals) {
       await this.applyLiquidityMiningProposal(
-        ('chainProposalId' in proposal && proposal.chainProposalId != null)
-          ? (proposal as typeof proposal & { chainProposalId: number }).chainProposalId
-          : proposal.id,
+        proposal.id,
         proposal.paramKey,
         proposal.newValue
       );
