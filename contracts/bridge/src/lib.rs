@@ -53,6 +53,56 @@ mod sxlm_token {
 
 use sxlm_token::SxlmTokenClient;
 
+// ---------- Mock Token Contract for Testing ----------
+#[contract]
+struct MockTokenContract;
+
+#[contractimpl]
+impl MockTokenContract {
+    pub fn initialize(env: Env, admin: Address) {
+        env.storage().instance().set(&DataKey::Admin, &admin);
+    }
+    
+    pub fn mint(env: Env, to: Address, amount: i128) {
+        let current_balance = Self::balance(env, to.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Nonce(to), &(current_balance + amount));
+    }
+    
+    pub fn burn(env: Env, from: Address, amount: i128) {
+        let current_balance = Self::balance(env, from.clone());
+        if current_balance < amount {
+            panic!("insufficient balance");
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::Nonce(from), &(current_balance - amount));
+    }
+    
+    pub fn balance(env: Env, id: Address) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Nonce(id))
+            .unwrap_or(0i128)
+    }
+}
+
+mod mock_token {
+    use soroban_sdk::{contractclient, Address, Env};
+
+    #[allow(dead_code)]
+    #[contractclient(name = "MockTokenClient")]
+    pub trait MockToken {
+        fn initialize(env: Env, admin: Address);
+        fn mint(env: Env, to: Address, amount: i128);
+        fn burn(env: Env, from: Address, amount: i128);
+        fn balance(env: Env, id: Address) -> i128;
+    }
+}
+
+use mock_token::MockTokenClient;
+
 // ---------- Storage helpers ----------
 
 fn extend_instance(env: &Env) {
@@ -350,6 +400,14 @@ impl BridgeAdapter {
             .set(&DataKey::Relayer, &new_relayer);
     }
 
+    pub fn set_sxlm_contract(env: Env, new_sxlm_token: Address) {
+        read_admin(&env).require_auth();
+        extend_instance(&env);
+        env.storage()
+            .instance()
+            .set(&DataKey::SxlmToken, &new_sxlm_token);
+    }
+
     pub fn set_admin(env: Env, new_admin: Address) {
         read_admin(&env).require_auth();
         extend_instance(&env);
@@ -543,18 +601,22 @@ mod test {
 
         let hash = evm_tx_hash(&env, 0xAB);
 
-        // TODO: refactor with a registered sXLM mock contract so the full
-        // release_from_evm flow (including mint) is exercised end-to-end.
-        // For now we directly manipulate storage to mark the hash as processed,
-        // then verify the second call panics with "already processed".
-        env.as_contract(&contract_id, || {
-            env.storage()
-                .persistent()
-                .set(&DataKey::ProcessedNonce(hash.clone()), &true);
-        });
-
-        // This call should now immediately panic with "already processed"
+        // Mock the sXLM token contract for proper end-to-end testing
+        let sxlm_contract_id = env.register_contract(None, MockTokenContract);
+        let sxlm_client = MockTokenClient::new(&env, &sxlm_contract_id);
+        sxlm_client.initialize(&admin);
+        
+        // Update bridge to use the mock sXLM contract
+        client.set_sxlm_contract(&sxlm_contract_id);
+        
+        // First successful call
         client.release_from_evm(&recipient, &10_0000000i128, &hash, &CHAIN_ARBITRUM);
+        
+        // Verify the mint was called
+        assert_eq!(sxlm_client.balance(&recipient), 10_0000000i128);
+
+        // Second call should panic with "already processed"
+        client.release_from_evm(&recipient, &5_0000000i128, &hash, &CHAIN_ARBITRUM);
     }
 
     #[test]
