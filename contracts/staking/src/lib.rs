@@ -9,6 +9,9 @@ const RATE_PRECISION: i128 = 10_000_000; // 1e7
 const PROTOCOL_FEE_BPS: i128 = 1000;
 const BPS_DENOMINATOR: i128 = 10_000;
 
+/// Minimum initial deposit to prevent inflation attacks.
+const MINIMUM_INITIAL_DEPOSIT: i128 = 1_000;
+
 // ---------- TTL constants ----------
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
@@ -187,6 +190,7 @@ impl StakingContract {
     // ==========================================================
 
     /// Deposit XLM and receive sXLM tokens.
+    /// Locks initial dead shares to prevent inflation attacks.
     pub fn deposit(env: Env, user: Address, xlm_amount: i128) {
         require_not_paused(&env);
         user.require_auth();
@@ -202,27 +206,47 @@ impl StakingContract {
         let total_staked = read_i128(&env, &DataKey::TotalXlmStaked);
         let total_supply = read_i128(&env, &DataKey::TotalSxlmSupply);
 
-        let sxlm_to_mint = if total_supply == 0 || total_staked == 0 {
-            xlm_amount
-        } else {
-            xlm_amount * total_supply / total_staked
-        };
-
-        if sxlm_to_mint <= 0 {
-            panic!("mint amount too small");
-        }
-
-        write_i128(&env, &DataKey::TotalXlmStaked, total_staked + xlm_amount);
-        write_i128(&env, &DataKey::TotalSxlmSupply, total_supply + sxlm_to_mint);
-
         let sxlm_token = read_sxlm_token(&env);
         let sxlm_client = SxlmTokenClient::new(&env, &sxlm_token);
-        sxlm_client.mint(&user, &sxlm_to_mint);
 
-        env.events().publish(
-            (soroban_sdk::symbol_short!("deposit"),),
-            (user, xlm_amount, sxlm_to_mint),
-        );
+        if total_supply == 0 || total_staked == 0 {
+            // First deposit: enforce minimum and lock dead shares.
+            if xlm_amount < MINIMUM_INITIAL_DEPOSIT {
+                panic!("first deposit below minimum initial amount");
+            }
+
+            let dead_shares = MINIMUM_INITIAL_DEPOSIT;
+            let user_shares = xlm_amount - dead_shares;
+
+            // Permanently lock dead shares in the contract (never withdrawable).
+            sxlm_client.mint(&env.current_contract_address(), &dead_shares);
+            if user_shares > 0 {
+                sxlm_client.mint(&user, &user_shares);
+            }
+
+            write_i128(&env, &DataKey::TotalXlmStaked, xlm_amount);
+            write_i128(&env, &DataKey::TotalSxlmSupply, xlm_amount);
+
+            env.events().publish(
+                (soroban_sdk::symbol_short!("deposit"),),
+                (user, xlm_amount, user_shares),
+            );
+        } else {
+            let sxlm_to_mint = xlm_amount * total_supply / total_staked;
+            if sxlm_to_mint <= 0 {
+                panic!("mint amount too small");
+            }
+
+            write_i128(&env, &DataKey::TotalXlmStaked, total_staked + xlm_amount);
+            write_i128(&env, &DataKey::TotalSxlmSupply, total_supply + sxlm_to_mint);
+
+            sxlm_client.mint(&user, &sxlm_to_mint);
+
+            env.events().publish(
+                (soroban_sdk::symbol_short!("deposit"),),
+                (user, xlm_amount, sxlm_to_mint),
+            );
+        }
     }
 
     /// Request withdrawal: burns sXLM and returns XLM.
@@ -292,6 +316,7 @@ impl StakingContract {
 
     /// Claim a delayed withdrawal after cooldown has expired.
     pub fn claim_withdrawal(env: Env, user: Address, withdrawal_id: u64) {
+        require_not_paused(&env);
         user.require_auth();
         extend_instance(&env);
 
@@ -714,5 +739,98 @@ mod test {
         assert_eq!(client.is_paused(), true);
         client.unpause();
         assert_eq!(client.is_paused(), false);
+    }
+
+    #[test]
+    fn test_first_deposit_locks_dead_shares() {
+        let env = Env::default();
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let contract_id = env.register_contract(None, StakingContract);
+        let client = StakingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &sxlm_id, &native_id, &17280u32);
+
+        // Fund user with XLM
+        soroban_sdk::token::StellarAssetClient::new(&env, &native_id)
+            .mint(&user, &10_000_0000000);
+
+        // First deposit of 10,000 stroops
+        let deposit_amount: i128 = 10_000;
+        client.deposit(&user, &deposit_amount);
+
+        // Total supply should equal the full deposit
+        assert_eq!(client.total_sxlm_supply(), deposit_amount);
+        assert_eq!(client.total_xlm_staked(), deposit_amount);
+
+        let sxlm_token = soroban_sdk::token::Client::new(&env, &sxlm_id);
+        // User receives deposit - dead_shares
+        let user_shares = deposit_amount - MINIMUM_INITIAL_DEPOSIT;
+        assert_eq!(sxlm_token.balance(&user), user_shares);
+        // Dead shares are locked in the contract
+        assert_eq!(sxlm_token.balance(&contract_id), MINIMUM_INITIAL_DEPOSIT);
+    }
+
+    #[test]
+    fn test_first_deposit_below_minimum_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let contract_id = env.register_contract(None, StakingContract);
+        let client = StakingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &sxlm_id, &native_id, &17280u32);
+
+        soroban_sdk::token::StellarAssetClient::new(&env, &native_id)
+            .mint(&user, &10_000_0000000);
+
+        // Deposit below minimum — should fail
+        let res = client.try_deposit(&user, &999);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_claim_withdrawal_blocked_when_paused() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let contract_id = env.register_contract(None, StakingContract);
+        let client = StakingContractClient::new(&env, &contract_id);
+        client.initialize(&admin, &sxlm_id, &native_id, &17280u32);
+
+        // Pause the contract
+        client.pause();
+
+        // Attempting to claim should fail with paused message
+        let res = client.try_claim_withdrawal(&user, &0);
+        assert!(res.is_err());
     }
 }
