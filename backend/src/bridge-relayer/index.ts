@@ -8,7 +8,9 @@ import {
   StrKey,
 } from "@stellar/stellar-sdk";
 import { ethers } from "ethers";
+import { Redis } from "ioredis";
 import { WSXLM_ABI } from "./wsxlm-abi.js";
+import { RetryQueue } from "./retry-queue.js";
 
 // ---------- Config ----------
 
@@ -43,8 +45,13 @@ const EVM_CHAINS: Record<
 
 const RELAYER_EVM_PRIVATE_KEY = process.env.RELAYER_EVM_PRIVATE_KEY!;
 
+// Redis connection for retry queue
+const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+const redis = new Redis(REDIS_URL);
+
 // Polling interval in ms
 const POLL_INTERVAL_MS = parseInt(process.env.POLL_INTERVAL_MS ?? "5000");
+const RETRY_PROCESS_INTERVAL_MS = parseInt(process.env.RETRY_PROCESS_INTERVAL_MS ?? "10000");
 
 // ---------- Types ----------
 
@@ -341,6 +348,46 @@ async function main() {
   const sorobanListener = new SorobanListener();
   const evmMinter = new EvmMinter();
   const sorobanReleaser = new SorobanReleaser();
+  const retryQueue = new RetryQueue(redis, {
+    maxAttempts: 5,
+    backoffMultiplier: 2,
+    initialDelayMs: 2000,
+    maxDelayMs: 300000, // 5 minutes
+  });
+
+  // Start retry queue processor
+  const startRetryProcessor = async () => {
+    while (true) {
+      try {
+        await retryQueue.process({
+          evmToStellar: async (data) => {
+            await sorobanReleaser.releaseFromEvm(data);
+          },
+          stellarToEvm: async (data) => {
+            await evmMinter.mint(
+              data.targetChainId,
+              data.evmRecipient,
+              data.amount,
+              data.txHash
+            );
+          },
+        });
+      } catch (err) {
+        console.error("[retry-processor] error:", err);
+      }
+      await sleep(RETRY_PROCESS_INTERVAL_MS);
+    }
+  };
+
+  // Log retry queue stats periodically
+  const logStats = async () => {
+    const stats = await retryQueue.getStats();
+    console.log(`[retry-queue] stats:`, stats);
+  };
+
+  // Start background processes
+  startRetryProcessor();
+  setInterval(logStats, 60000); // Log stats every minute
 
   // Subscribe to EVM → Stellar direction
   evmMinter.subscribeToEVMEvents(async (event) => {
@@ -349,7 +396,11 @@ async function main() {
       await sorobanReleaser.releaseFromEvm(event);
     } catch (err) {
       console.error("[relayer] failed to release on Soroban:", err);
-      // TODO: add retry queue / dead letter store
+      await retryQueue.add({
+        type: "evm_to_stellar",
+        data: event,
+        maxAttempts: 5,
+      });
     }
   });
 
@@ -370,7 +421,11 @@ async function main() {
           );
         } catch (err) {
           console.error("[relayer] failed to mint on EVM:", err);
-          // TODO: add retry queue / dead letter store
+          await retryQueue.add({
+            type: "stellar_to_evm",
+            data: event,
+            maxAttempts: 5,
+          });
         }
       }
     } catch (err) {
