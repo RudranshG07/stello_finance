@@ -26,6 +26,7 @@ pub enum DataKey {
     LpBalance(Address),
     ProtocolFeeBps,
     AccruedProtocolFees,
+    AccruedProtocolFeesSxlm,
     // ---- Liquidity mining ----
     MiningProgram,
     AccRewardsPerShare,
@@ -663,8 +664,22 @@ impl LpPoolContract {
             &xlm_out,
         );
 
-        write_i128(&env, &DataKey::ReserveSxlm, reserve_sxlm + sxlm_amount);
+        // Protocol fee: split the sXLM swap fee between LPs and protocol,
+        // mirroring the logic in swap_xlm_to_sxlm.
+        let total_fee = sxlm_amount - amount_after_fee;
+        let protocol_fee_bps = read_i128(&env, &DataKey::ProtocolFeeBps);
+        let protocol_cut = total_fee * protocol_fee_bps / fee_bps;
+
+        // Reserve gets full sxlm_amount MINUS protocol cut (LPs keep the rest of the fee)
+        write_i128(
+            &env,
+            &DataKey::ReserveSxlm,
+            reserve_sxlm + sxlm_amount - protocol_cut,
+        );
         write_i128(&env, &DataKey::ReserveXlm, reserve_xlm - xlm_out);
+
+        let accrued = read_i128(&env, &DataKey::AccruedProtocolFeesSxlm);
+        write_i128(&env, &DataKey::AccruedProtocolFeesSxlm, accrued + protocol_cut);
 
         env.events().publish(
             (soroban_sdk::symbol_short!("swap"),),
@@ -704,6 +719,32 @@ impl LpPoolContract {
         accrued
     }
 
+    /// Collect accrued sXLM protocol fees from sXLM→XLM swaps. Admin-only.
+    pub fn collect_protocol_fees_sxlm(env: Env) -> i128 {
+        let admin = read_admin(&env);
+        admin.require_auth();
+        extend_instance(&env);
+
+        let accrued = read_i128(&env, &DataKey::AccruedProtocolFeesSxlm);
+        if accrued <= 0 {
+            return 0;
+        }
+
+        let sxlm = read_sxlm_token(&env);
+        token::Client::new(&env, &sxlm).transfer(
+            &env.current_contract_address(),
+            &admin,
+            &accrued,
+        );
+
+        write_i128(&env, &DataKey::AccruedProtocolFeesSxlm, 0);
+
+        env.events()
+            .publish((soroban_sdk::symbol_short!("pf_col"),), (admin, accrued));
+
+        accrued
+    }
+
     /// Set protocol fee in basis points.
     pub fn set_protocol_fee_bps(env: Env, bps: u32) {
         let admin = read_admin(&env);
@@ -717,6 +758,12 @@ impl LpPoolContract {
     pub fn accrued_protocol_fees(env: Env) -> i128 {
         extend_instance(&env);
         read_i128(&env, &DataKey::AccruedProtocolFees)
+    }
+
+    /// View accrued sXLM protocol fees from sXLM→XLM swaps.
+    pub fn accrued_protocol_fees_sxlm(env: Env) -> i128 {
+        extend_instance(&env);
+        read_i128(&env, &DataKey::AccruedProtocolFeesSxlm)
     }
 
     pub fn protocol_fee_bps(env: Env) -> i128 {
@@ -925,13 +972,41 @@ mod test {
     }
 
     #[test]
-    fn test_sxlm_to_xlm_no_protocol_fee() {
+    fn test_sxlm_to_xlm_protocol_fee() {
         let (env, contract_id, _, _, user, _) = setup_test();
         let client = LpPoolContractClient::new(&env, &contract_id);
 
         client.add_liquidity(&user, &100_000_0000000, &100_000_0000000);
+        assert_eq!(client.accrued_protocol_fees_sxlm(), 0);
+
         client.swap_sxlm_to_xlm(&user, &10_000_0000000, &0);
+
+        let accrued = client.accrued_protocol_fees_sxlm();
+        assert!(accrued > 0, "sXLM protocol fees should accrue on sXLM→XLM swap");
+        // fee = 10_000 × 0.3% = 30 sXLM; protocol cut = 30 × 5/30 = 5 sXLM
+        assert_eq!(accrued, 5_0000000);
+        // XLM protocol fees should remain 0 (only sXLM fees accrue here)
         assert_eq!(client.accrued_protocol_fees(), 0);
+    }
+
+    #[test]
+    fn test_sxlm_protocol_fee_collection() {
+        let (env, contract_id, sxlm_id, _, user, admin) = setup_test();
+        let client = LpPoolContractClient::new(&env, &contract_id);
+
+        client.add_liquidity(&user, &100_000_0000000, &100_000_0000000);
+        client.swap_sxlm_to_xlm(&user, &10_000_0000000, &0);
+
+        let accrued = client.accrued_protocol_fees_sxlm();
+        assert!(accrued > 0);
+
+        let admin_balance_before = token::Client::new(&env, &sxlm_id).balance(&admin);
+        let collected = client.collect_protocol_fees_sxlm();
+        let admin_balance_after = token::Client::new(&env, &sxlm_id).balance(&admin);
+
+        assert_eq!(collected, accrued);
+        assert_eq!(admin_balance_after - admin_balance_before, accrued);
+        assert_eq!(client.accrued_protocol_fees_sxlm(), 0);
     }
 
     // ---- liquidity mining tests ----
