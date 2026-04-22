@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef, createContext, useContext, cr
 import type { ReactNode } from 'react';
 import axios from '../lib/apiClient';
 import { API_BASE_URL } from '../config/contracts';
+import { getWalletErrorInfo, type WalletErrorType } from '../utils/walletErrors';
 
 interface WalletState {
   publicKey: string | null;
@@ -9,6 +10,8 @@ interface WalletState {
   isConnecting: boolean;
   error: string | null;
   jwtToken: string | null;
+  connectionAttempts: number;
+  lastErrorType: WalletErrorType | null;
 }
 
 interface WalletContextValue extends WalletState {
@@ -16,10 +19,15 @@ interface WalletContextValue extends WalletState {
   disconnect: () => void;
   signTransaction: (xdr: string, networkPassphrase: string) => Promise<string>;
   getAuthHeaders: () => Record<string, string>;
+  clearError: () => void;
+  retryConnection: () => Promise<void>;
 }
 
 const JWT_STORAGE_KEY = 'sxlm_jwt_token';
 const WALLET_STORAGE_KEY = 'sxlm_wallet';
+const MAX_CONNECTION_ATTEMPTS = 3;
+const CONNECTION_RETRY_DELAY = 2000;
+
 
 const WalletContext = createContext<WalletContextValue | null>(null);
 
@@ -42,6 +50,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       isConnecting: false,
       error: null,
       jwtToken: null,
+      connectionAttempts: 0,
+      lastErrorType: null,
     };
   });
 
@@ -68,6 +78,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
               isConnecting: false,
               error: null,
               jwtToken: savedToken,
+              connectionAttempts: 0,
+              lastErrorType: null,
             });
           }
         }
@@ -115,8 +127,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     return data.token;
   }, []);
 
-  const connect = useCallback(async () => {
-    setState((prev) => ({ ...prev, isConnecting: true, error: null }));
+  const connect = useCallback(async (isRetry = false) => {
+    if (!isRetry) {
+      setState((prev) => ({ ...prev, isConnecting: true, error: null, connectionAttempts: 0 }));
+    }
+    
     try {
       const freighterApi = await import('@stellar/freighter-api');
 
@@ -136,7 +151,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       let token: string;
       try {
         token = await authenticateWithBackend(wallet);
-      } catch {
+      } catch (authError) {
+        console.warn('Backend authentication failed:', authError);
         token = '';
       }
 
@@ -151,16 +167,42 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         isConnecting: false,
         error: null,
         jwtToken: token || null,
+        connectionAttempts: 0,
+        lastErrorType: null,
       });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : 'Failed to connect wallet';
+      const errorInfo = getWalletErrorInfo(err);
+      const currentAttempts = stateRef.current.connectionAttempts + 1;
+      
       setState((prev) => ({
         ...prev,
         isConnecting: false,
-        error: message,
+        error: `${errorInfo.title}: ${errorInfo.message}`,
+        connectionAttempts: currentAttempts,
+        lastErrorType: errorInfo.type,
       }));
+
+      // Auto-retry for errors that support it
+      if (errorInfo.autoRetry && currentAttempts < MAX_CONNECTION_ATTEMPTS) {
+        setTimeout(() => {
+          connect(true);
+        }, CONNECTION_RETRY_DELAY * currentAttempts);
+      }
     }
   }, [authenticateWithBackend]);
+
+  const retryConnection = useCallback(async () => {
+    await connect(false);
+  }, [connect]);
+
+  const clearError = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      error: null,
+      lastErrorType: null,
+      connectionAttempts: 0,
+    }));
+  }, []);
 
   const disconnect = useCallback(() => {
     localStorage.removeItem(JWT_STORAGE_KEY);
@@ -171,6 +213,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       isConnecting: false,
       error: null,
       jwtToken: null,
+      connectionAttempts: 0,
+      lastErrorType: null,
     });
   }, []);
 
@@ -207,6 +251,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     disconnect,
     signTransaction,
     getAuthHeaders,
+    clearError,
+    retryConnection,
   };
 
   return createElement(WalletContext.Provider, { value }, children);

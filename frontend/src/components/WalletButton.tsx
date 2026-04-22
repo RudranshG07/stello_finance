@@ -1,11 +1,23 @@
 import { useState, useRef, useEffect } from 'react';
-import { LogOut, Copy, Check } from 'lucide-react';
+import { LogOut, Copy, Check, AlertCircle, RefreshCw, ExternalLink } from 'lucide-react';
 import { useWallet } from '../hooks/useWallet';
 import { useStaking } from '../hooks/useStaking';
 import { formatAddress } from '../utils/stellar';
+import { WALLET_ERROR_MESSAGES, type WalletErrorType } from '../utils/walletErrors';
 
 export default function WalletButton() {
-  const { publicKey, isConnected, isConnecting, error, connect, disconnect } = useWallet();
+  const { 
+    publicKey, 
+    isConnected, 
+    isConnecting, 
+    error, 
+    lastErrorType,
+    connectionAttempts,
+    connect, 
+    disconnect,
+    clearError,
+    retryConnection
+  } = useWallet();
   const { balance } = useStaking();
   const [showDropdown, setShowDropdown] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -30,12 +42,82 @@ export default function WalletButton() {
   };
 
   if (!isConnected) {
+    const getErrorIcon = (errorType: WalletErrorType | null) => {
+      if (errorType === 'freighter_missing') return <ExternalLink className="w-3 h-3" />;
+      if (errorType === 'freighter_locked') return <AlertCircle className="w-3 h-3" />;
+      return <AlertCircle className="w-3 h-3" />;
+    };
+
+    const getErrorAction = (errorType: WalletErrorType | null) => {
+      if (!errorType) return null;
+      
+      const errorInfo = WALLET_ERROR_MESSAGES[errorType];
+      
+      if (errorType === 'freighter_missing') {
+        return (
+          <button
+            onClick={() => window.open('https://freighter.app', '_blank')}
+            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+          >
+            <ExternalLink className="w-3 h-3" />
+            {errorInfo.action}
+          </button>
+        );
+      }
+      
+      if (errorType === 'user_rejected') {
+        return (
+          <button
+            onClick={() => { clearError(); connect(); }}
+            className="flex items-center gap-1 text-xs text-yellow-400 hover:text-yellow-300 transition-colors"
+          >
+            <RefreshCw className="w-3 h-3" />
+            {errorInfo.action}
+          </button>
+        );
+      }
+      
+      if (errorInfo.canRetry && connectionAttempts < 3) {
+        return (
+          <button
+            onClick={retryConnection}
+            className="flex items-center gap-1 text-xs text-yellow-400 hover:text-yellow-300 transition-colors"
+          >
+            <RefreshCw className={`w-3 h-3 ${isConnecting ? 'animate-spin' : ''}`} />
+            {isConnecting ? 'Retrying...' : `${errorInfo.action} (${connectionAttempts}/3)`}
+          </button>
+        );
+      }
+      
+      return null;
+    };
+
     return (
-      <div className="flex flex-col items-end gap-1">
-        <button onClick={connect} disabled={isConnecting} className="btn text-xs">
-          {isConnecting ? 'Connecting...' : 'Connect Wallet'}
+      <div className="flex flex-col items-end gap-2">
+        <button 
+          onClick={connect} 
+          disabled={isConnecting} 
+          className="btn text-xs relative"
+        >
+          {isConnecting ? (
+            <span className="flex items-center gap-2">
+              <RefreshCw className="w-3 h-3 animate-spin" />
+              {connectionAttempts > 0 ? `Retrying... (${connectionAttempts}/3)` : 'Connecting...'}
+            </span>
+          ) : (
+            'Connect Wallet'
+          )}
         </button>
-        {error && <p className="text-xs text-red-400 max-w-[250px] text-right">{error}</p>}
+        
+        {error && (
+          <div className="flex flex-col items-end gap-1 max-w-[300px]">
+            <div className="flex items-center gap-2 text-xs text-red-400">
+              {getErrorIcon(lastErrorType)}
+              <span className="text-right">{error}</span>
+            </div>
+            {getErrorAction(lastErrorType)}
+          </div>
+        )}
       </div>
     );
   }
