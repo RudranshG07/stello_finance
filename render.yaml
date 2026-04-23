@@ -29,6 +29,8 @@ services:
         value: ""
       - key: GOVERNANCE_CONTRACT_ID
         value: ""
+      - key: VESTING_CONTRACT_ID
+        value: ""
       - key: ADMIN_PUBLIC_KEY
         value: GDWXTIIROGCVBSNQMBJFH6HOWQ4YSRVMKSUS53CH6MP56WSWD6J4VZ5N
       - key: ADMIN_SECRET_KEY

@@ -90,6 +90,11 @@
   input[type='number']::-webkit-outer-spin-button {
     -webkit-appearance: none;
   }
+
+  /* Dark-mode date picker */
+  input[type='date'] {
+    color-scheme: dark;
+  }
 }
 
 @layer components {

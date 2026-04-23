@@ -11,6 +11,7 @@ import Leverage from './pages/Leverage';
 import Restaking from './pages/Restaking';
 import Bridge from './pages/Bridge';
 import Analytics from './pages/Analytics';
+import Vesting from './pages/Vesting';
 
 function App() {
   return (
@@ -53,6 +54,7 @@ function App() {
             <Route path="/restaking" element={<Restaking />} />
             <Route path="/bridge" element={<Bridge />} />
             <Route path="/analytics" element={<Analytics />} />
+            <Route path="/vesting" element={<Vesting />} />
           </Routes>
         </main>
       </div>
