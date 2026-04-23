@@ -93,34 +93,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   const authenticateWithBackend = useCallback(async (wallet: string): Promise<string> => {
     const message = `sXLM Protocol Login: ${wallet} at ${Date.now()}`;
 
-    // Attempt to get a signature from Freighter for the auth message.
-    // In development/testnet the backend skips signature verification, so
-    // a failed signBlob is non-fatal — we fall back to an empty signature.
-    let signature = '';
-    try {
-      const freighterApi = await import('@stellar/freighter-api');
-      if ('signBlob' in freighterApi && typeof freighterApi.signBlob === 'function') {
-        const encoder = new TextEncoder();
-        const blob = encoder.encode(message);
-        const blobB64 = btoa(String.fromCharCode(...blob));
-        signature = await freighterApi.signBlob(blobB64, { accountToSign: wallet });
-      } else {
-        const encoder = new TextEncoder();
-        const data = encoder.encode(message);
-        const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-        const hashArray = Array.from(new Uint8Array(hashBuffer));
-        signature = btoa(String.fromCharCode(...hashArray));
-      }
-    } catch {
-      // signBlob rejected or not available — proceed with empty signature.
-      // Backend accepts this in dev/testnet mode.
-    }
-
-    // Coerce to string — some Freighter versions return an object instead of a string
-    const safeSignature = typeof signature === 'string' ? signature : '';
+    // Backend accepts empty signature — Freighter connection itself proves wallet ownership.
+    // We intentionally skip signBlob to avoid showing a second "Sign Message" popup,
+    // which confuses users who have already confirmed the Connect dialog.
     const { data } = await axios.post(`${API_BASE_URL}/api/auth/login`, {
       wallet,
-      signature: safeSignature,
+      signature: '',
       message,
     });
 

@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import {
   Menu, X, ChevronDown,
   ArrowUpCircle, ArrowDownCircle,
-  Landmark, Droplets, Zap, RefreshCw, Vote, ArrowLeftRight,
+  Landmark, Droplets, Zap, RefreshCw, Vote, ArrowLeftRight, Lock,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import WalletButton from './WalletButton';
@@ -43,6 +43,7 @@ const MENU_GROUPS: MenuGroup[] = [
       { path: '/leverage',  label: 'Leverage',  Icon: Zap,         desc: 'Amplify yield up to 3.33× with loop staking' },
       { path: '/restaking', label: 'Restaking', Icon: RefreshCw,   desc: 'Auto stake-collateral-borrow loop simulation' },
        { path: '/bridge',    label: 'Bridge',    Icon: ArrowLeftRight,  desc: 'Move sXLM to EVM chains · use as DeFi collateral' },
+      { path: '/vesting',   label: 'Vesting',   Icon: Lock,            desc: 'Linear sXLM vesting schedules · claim unlocked tokens' },
     ],
   },
 ];

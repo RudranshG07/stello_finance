@@ -78,6 +78,7 @@ export class EventListenerService {
                   config.contracts.lendingContractId,
                   config.contracts.lpPoolContractId,
                   config.contracts.governanceContractId,
+                  config.contracts.vestingContractId,
                 ].filter(Boolean),
               },
             ],
@@ -352,6 +353,74 @@ export class EventListenerService {
 
     } else if (topicName === "executed") {
       console.log(`[EventListener] Proposal executed at ledger ${event.ledger}`);
+
+    // --- Vesting events ---
+    } else if (topicName === "vst_new" && event.contractId === config.contracts.vestingContractId) {
+      // (id, beneficiary, total_amount, start_ledger, end_ledger)
+      const values = decoded as unknown[];
+      if (Array.isArray(values) && values.length >= 5) {
+        const scheduleId = BigInt(values[0] as any);
+        const beneficiary = String(values[1]);
+        const totalAmount = BigInt(values[2] as any);
+        const startLedger = Number(values[3]);
+        const endLedger = Number(values[4]);
+        console.log(`[EventListener] Vesting schedule created: id=${scheduleId} beneficiary=${beneficiary} amount=${totalAmount}`);
+        try {
+          await this.prisma.vestingSchedule.upsert({
+            where: { scheduleId },
+            create: {
+              scheduleId,
+              beneficiary,
+              tokenAddress: config.contracts.sxlmTokenContractId,
+              tokenSymbol: "sXLM",
+              totalAmount,
+              startLedger,
+              cliffLedger: startLedger, // cliff unknown from event — default to start
+              endLedger,
+            },
+            update: {},
+          });
+        } catch {
+          // Ignore duplicate upsert errors
+        }
+      }
+
+    } else if (topicName === "vst_clm" && event.contractId === config.contracts.vestingContractId) {
+      // (schedule_id, beneficiary, claimable)
+      const values = decoded as unknown[];
+      if (Array.isArray(values) && values.length >= 3) {
+        const scheduleId = BigInt(values[0] as any);
+        const claimable = BigInt(values[2] as any);
+        console.log(`[EventListener] Vesting claimed: id=${scheduleId} amount=${claimable}`);
+        try {
+          const existing = await this.prisma.vestingSchedule.findUnique({ where: { scheduleId } });
+          if (existing) {
+            await this.prisma.vestingSchedule.update({
+              where: { scheduleId },
+              data: { claimed: existing.claimed + claimable },
+            });
+          }
+        } catch {
+          // Ignore DB errors
+        }
+      }
+
+    } else if (topicName === "vst_rev" && event.contractId === config.contracts.vestingContractId) {
+      // (schedule_id, vested_now, unvested)
+      const values = decoded as unknown[];
+      if (Array.isArray(values) && values.length >= 3) {
+        const scheduleId = BigInt(values[0] as any);
+        const vestedAtRevoke = BigInt(values[1] as any);
+        console.log(`[EventListener] Vesting revoked: id=${scheduleId} vestedAtRevoke=${vestedAtRevoke}`);
+        try {
+          await this.prisma.vestingSchedule.updateMany({
+            where: { scheduleId },
+            data: { revoked: true, vestedAtRevoke },
+          });
+        } catch {
+          // Ignore DB errors
+        }
+      }
     }
   }
 }

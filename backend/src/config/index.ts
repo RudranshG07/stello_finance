@@ -56,6 +56,10 @@ export const config = {
       "GOVERNANCE_CONTRACT_ID",
       "CB7LV3FBQ7US26GVC7SM7RMX22IEEHAEUL7V3TDDWM32DHA5TDFDDEP4"
     ),
+    vestingContractId: requireEnv(
+      "VESTING_CONTRACT_ID",
+      ""
+    ),
     // Additional collateral asset contract IDs (Stellar Soroban SAC addresses)
     usdcContractId: requireEnv(
       "USDC_CONTRACT_ID",

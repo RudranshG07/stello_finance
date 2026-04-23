@@ -23,6 +23,7 @@ import { lendingRoutes } from "./routes/lending.js";
 import { liquidityRoutes } from "./routes/liquidity.js";
 import { governanceRoutes } from "./routes/governance.js";
 import { analyticsRoutes } from "./routes/analytics.js";
+import { vestingRoutes } from "./routes/vesting.js";
 
 export interface GatewayDeps {
   prisma: PrismaClient;
@@ -146,6 +147,12 @@ export async function startApiGateway(deps: GatewayDeps) {
 
   // Public analytics routes (read-only, no auth required)
   await fastify.register(analyticsRoutes, {
+    prisma: deps.prisma,
+    prefix: "/api",
+  });
+
+  // Vesting schedules (read-only public + claim/create/revoke for signed wallets)
+  await fastify.register(vestingRoutes, {
     prisma: deps.prisma,
     prefix: "/api",
   });

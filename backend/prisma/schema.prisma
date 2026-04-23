@@ -339,3 +339,42 @@ model CohortAvgPositionSize {
   @@index([cohortDate])
   @@map("cohort_avg_position_size")
 }
+
+// ─── Vesting ──────────────────────────────────────────────────────────────
+
+/// Off-chain mirror of a VestingSchedule stored in the on-chain vesting contract.
+/// Kept in sync by the hubble indexer when vst_new / vst_clm / vst_rev events arrive.
+model VestingSchedule {
+  id              Int      @id @default(autoincrement())
+  /// On-chain schedule ID (u64 from contract).
+  scheduleId      BigInt   @unique
+  /// Beneficiary Stellar address.
+  beneficiary     String
+  /// Token contract address being vested (sXLM or native XLM SAC).
+  tokenAddress    String
+  /// Human-readable token symbol (e.g. "sXLM").
+  tokenSymbol     String   @default("sXLM")
+  /// Total tokens locked in stroops.
+  totalAmount     BigInt
+  /// Tokens claimed so far (stroops).
+  claimed         BigInt   @default(0)
+  /// Vesting start ledger number.
+  startLedger     Int
+  /// Cliff ledger — no tokens claimable before this.
+  cliffLedger     Int
+  /// End ledger — 100% vested from here.
+  endLedger       Int
+  /// Whether admin can revoke unvested tokens.
+  revocable       Boolean  @default(false)
+  /// Set to true after on-chain revocation.
+  revoked         Boolean  @default(false)
+  /// Amount vested at revocation time (stroops); 0 while active.
+  vestedAtRevoke  BigInt   @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([beneficiary])
+  @@index([tokenAddress])
+  @@index([revoked])
+  @@map("vesting_schedules")
+}
