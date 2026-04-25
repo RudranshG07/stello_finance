@@ -18,7 +18,6 @@ export default function Governance() {
     queueProposal,
     cancelProposal,
     executeQueued,
-    executeProposal,
     clearError,
   } = useGovernance();
 
@@ -54,11 +53,6 @@ export default function Governance() {
   const handleExecuteQueued = async (proposalId: number) => {
     clearError();
     await executeQueued(proposalId);
-  };
-
-  const handleExecute = async (proposalId: number) => {
-    clearError();
-    await executeProposal(proposalId);
   };
 
   const getStatusBadge = (status: string) => {

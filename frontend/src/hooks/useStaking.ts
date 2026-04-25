@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { SorobanRpc, Contract, Address, TransactionBuilder, BASE_FEE, scValToNative } from '@stellar/stellar-sdk';
 import axios from '../lib/apiClient';
-import { API_BASE_URL, NETWORK, CONTRACTS } from '../config/contracts';
+import { API_BASE_URL, NETWORK } from '../config/contracts';
 import { useWallet } from './useWallet';
 
 // Admin public key used as source for read-only Soroban simulations.
@@ -305,7 +305,7 @@ export function useStaking(): UseStakingReturn {
         return false;
       }
     },
-    [isConnected, publicKey, signTransaction, getAuthHeaders]
+    [isConnected, publicKey, signTransaction, getAuthHeaders, refreshBalance]
   );
 
   const fetchPendingWithdrawals = useCallback(async () => {
