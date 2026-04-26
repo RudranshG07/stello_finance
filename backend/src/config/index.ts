@@ -109,7 +109,7 @@ export const config = {
   },
 
   protocol: {
-    unbondingPeriodMs: 7 * 24 * 60 * 60 * 1000, // 7 days
+    unbondingPeriodMs: 24 * 60 * 60 * 1000, // ~24 hours default staking cooldown
     liquidityBufferPercent: 5, // 5% of TVL — fallback minimum
     liquidityBufferSafetyFactor: 2.5, // α in Required Buffer = D × α
     liquidityBufferLookbackDays: 7, // Days to average withdrawal demand

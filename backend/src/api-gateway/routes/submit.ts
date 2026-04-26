@@ -9,8 +9,8 @@ import {
   scValToNative,
   BASE_FEE,
 } from "@stellar/stellar-sdk";
+import { PrismaClient } from "@prisma/client";
 import { config } from "../../config/index.js";
-import { StakingEngine } from "../../staking-engine/index.js";
 import { stellarAddressSchema, signedXdrSchema } from "../middleware/validation.js";
 
 const claimSchema = z.object({
@@ -21,60 +21,85 @@ const claimSchema = z.object({
 interface WithdrawalEntry {
   user: string;
   claimed: boolean;
-  xlm_amount: string;
+  xlm_amount: string | bigint;
   unlock_ledger: number;
 }
 
-/**
- * Scan the staking contract's withdrawal queue to find the contract-side
- * withdrawal ID for a given user address. The contract uses a global 0-based
- * counter while the DB uses 1-based auto-increment, so they diverge for
- * multi-user scenarios. Returns { id, entry } or null if not found.
- */
-async function findContractWithdrawal(
+interface ContractWithdrawalMatch {
+  id: number;
+  entry: WithdrawalEntry;
+}
+
+type RpcAccount = Awaited<ReturnType<rpc.Server["getAccount"]>>;
+
+async function getContractWithdrawal(
   server: rpc.Server,
-  userAddress: string,
-  maxScan = 50,
-): Promise<{ id: number; entry: WithdrawalEntry } | null> {
+  adminAccount: RpcAccount,
+  withdrawalId: number,
+): Promise<WithdrawalEntry | null> {
   const stakingContract = new Contract(config.contracts.stakingContractId);
-  const adminAccount = await server.getAccount(config.admin.publicKey);
+
+  try {
+    const tx = new TransactionBuilder(adminAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: config.stellar.networkPassphrase,
+    })
+      .addOperation(
+        stakingContract.call(
+          "get_withdrawal",
+          nativeToScVal(withdrawalId, { type: "u64" })
+        )
+      )
+      .setTimeout(30)
+      .build();
+
+    const sim = await server.simulateTransaction(tx);
+    if (!rpc.Api.isSimulationSuccess(sim) || !sim.result) {
+      return null;
+    }
+
+    return scValToNative(sim.result.retval) as WithdrawalEntry;
+  } catch {
+    return null;
+  }
+}
+
+async function listUnclaimedContractWithdrawals(
+  server: rpc.Server,
+  adminAccount: RpcAccount,
+  userAddress: string,
+  maxScan = 200,
+): Promise<ContractWithdrawalMatch[]> {
+  const matches: ContractWithdrawalMatch[] = [];
 
   for (let id = 0; id < maxScan; id++) {
-    try {
-      const tx = new TransactionBuilder(adminAccount, {
-        fee: BASE_FEE,
-        networkPassphrase: config.stellar.networkPassphrase,
-      })
-        .addOperation(
-          stakingContract.call(
-            "get_withdrawal",
-            nativeToScVal(id, { type: "u64" })
-          )
-        )
-        .setTimeout(30)
-        .build();
+    const entry = await getContractWithdrawal(server, adminAccount, id);
+    if (entry === null) {
+      break;
+    }
 
-      const sim = await server.simulateTransaction(tx);
-
-      if (!rpc.Api.isSimulationSuccess(sim) || !sim.result) break; // past end of queue
-
-      const entry = scValToNative(sim.result.retval) as WithdrawalEntry;
-
-      if (entry.user === userAddress && !entry.claimed) {
-        return { id, entry };
-      }
-    } catch {
-      break; // no more entries
+    if (entry.user === userAddress && !entry.claimed) {
+      matches.push({ id, entry });
     }
   }
 
-  return null;
+  return matches;
 }
 
-export const submitRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine }> = async (
+function estimateUnlockTimeFromLedger(
+  currentLedger: number,
+  unlockLedger: number,
+  now = Date.now(),
+): Date {
+  const remainingLedgers = Math.max(unlockLedger - currentLedger, 0);
+  return new Date(now + remainingLedgers * 5000);
+}
+
+export const submitRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async (
   fastify,
   opts
 ) => {
+  const { prisma } = opts;
   const server = new rpc.Server(config.stellar.rpcUrl);
 
   /**
@@ -140,28 +165,78 @@ export const submitRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine }> 
   /**
    * POST /staking/claim
    * Build an unsigned claim withdrawal transaction for user to sign.
-   *
-   * The contract uses a 0-based auto-increment counter for withdrawal IDs,
-   * but the frontend DB uses 1-based auto-increment IDs. To avoid mismatches,
-   * we scan the contract's withdrawal queue to find the correct contract-side
-   * ID for this user rather than blindly trusting the DB-provided withdrawalId.
    */
   fastify.post("/staking/claim", async (request, reply) => {
     try {
       const body = claimSchema.parse(request.body);
+      const dbWithdrawalId = Number.parseInt(body.withdrawalId, 10);
+      if (!Number.isSafeInteger(dbWithdrawalId) || dbWithdrawalId <= 0) {
+        return reply.status(400).send({ error: "Invalid withdrawal ID." });
+      }
 
-      // Find the correct contract withdrawal ID by scanning the queue.
-      // Contract IDs start at 0 and auto-increment globally (not per-user).
-      const withdrawal = await findContractWithdrawal(server, body.userAddress);
+      const dbWithdrawal = await prisma.withdrawal.findFirst({
+        where: {
+          id: dbWithdrawalId,
+          wallet: body.userAddress,
+          status: { in: ["pending", "processing"] },
+        },
+      });
+      if (!dbWithdrawal) {
+        return reply.status(404).send({
+          error: "Withdrawal not found for this wallet, or it is no longer claimable.",
+        });
+      }
+
+      let withdrawal: ContractWithdrawalMatch | null = null;
+      const adminAccount = await server.getAccount(config.admin.publicKey);
+
+      if (dbWithdrawal.contractWithdrawalId !== null) {
+        if (dbWithdrawal.contractWithdrawalId > BigInt(Number.MAX_SAFE_INTEGER)) {
+          return reply.status(400).send({
+            error: "Withdrawal ID is too large to handle safely in the API.",
+          });
+        }
+
+        const contractWithdrawalId = Number(dbWithdrawal.contractWithdrawalId);
+        const entry = await getContractWithdrawal(server, adminAccount, contractWithdrawalId);
+        if (entry && entry.user === body.userAddress && !entry.claimed) {
+          withdrawal = { id: contractWithdrawalId, entry };
+        }
+      } else {
+        const matches = await listUnclaimedContractWithdrawals(server, adminAccount, body.userAddress);
+        if (matches.length === 1) {
+          withdrawal = matches[0];
+        } else if (matches.length > 1) {
+          return reply.status(409).send({
+            error: "Multiple on-chain withdrawals are pending for this wallet, but this record is missing its contract withdrawal ID. Refresh after the event listener syncs, then try again.",
+          });
+        }
+      }
+
       if (withdrawal === null) {
         return reply.status(400).send({
-          error: "No unclaimed withdrawal found for your address. It may already be claimed or the cooldown has not started yet.",
+          error: "No matching unclaimed contract withdrawal was found. It may already be claimed or still syncing from the chain.",
         });
       }
 
       // Check cooldown BEFORE simulation — Soroban panic messages don't
       // surface as readable text, just "UnreachableCodeReached".
       const latestLedger = await server.getLatestLedger();
+      if (dbWithdrawal.contractWithdrawalId === null) {
+        await prisma.withdrawal.update({
+          where: { id: dbWithdrawal.id },
+          data: {
+            amount: BigInt(withdrawal.entry.xlm_amount),
+            contractWithdrawalId: BigInt(withdrawal.id),
+            unlockLedger: withdrawal.entry.unlock_ledger,
+            unlockTime: estimateUnlockTimeFromLedger(
+              latestLedger.sequence,
+              withdrawal.entry.unlock_ledger,
+            ),
+          },
+        });
+      }
+
       if (latestLedger.sequence < withdrawal.entry.unlock_ledger) {
         const remaining = withdrawal.entry.unlock_ledger - latestLedger.sequence;
         const minsLeft = Math.ceil((remaining * 5) / 60);
@@ -199,6 +274,7 @@ export const submitRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine }> 
       return {
         xdr: preparedTx.toXDR(),
         networkPassphrase: config.stellar.networkPassphrase,
+        withdrawalId: dbWithdrawal.id,
         contractWithdrawalId: withdrawal.id,
       };
     } catch (err: unknown) {

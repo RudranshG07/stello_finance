@@ -10,6 +10,7 @@ let pollInterval: ReturnType<typeof setInterval> | null = null;
 let lastLedger = 0;
 
 const LEDGER_STATE_FILE = path.join(process.cwd(), ".last_ledger");
+const LEDGER_DURATION_MS = 5000;
 
 interface RawSorobanEvent {
   type: string;
@@ -17,6 +18,11 @@ interface RawSorobanEvent {
   contractId: string;
   topic: string[];
   value: string;
+}
+
+function estimateUnlockTime(currentLedger: number, unlockLedger: number, now = Date.now()): Date {
+  const remainingLedgers = Math.max(unlockLedger - currentLedger, 0);
+  return new Date(now + remainingLedgers * LEDGER_DURATION_MS);
 }
 
 export class EventListenerService {
@@ -192,14 +198,6 @@ export class EventListenerService {
         `[EventListener] Instant withdrawal: wallet=${wallet} xlm=${xlmAmount} ledger=${event.ledger}`
       );
 
-      // Update DB: mark withdrawal as completed
-      if (wallet) {
-        await this.prisma.withdrawal.updateMany({
-          where: { wallet, status: "pending" },
-          data: { status: "completed" },
-        });
-      }
-
       // Emit unstake event for delegation manager
       await eventBus.publish(EventType.UNSTAKE_EXECUTED, {
         wallet,
@@ -234,22 +232,51 @@ export class EventListenerService {
         `[EventListener] Delayed withdrawal: wallet=${wallet} xlm=${xlmAmount} id=${withdrawalId} unlock=${unlockLedger}`
       );
 
-      // Record in DB if not already tracked
-      const existing = await this.prisma.withdrawal.findFirst({
-        where: { wallet, amount: xlmAmount, status: "pending" },
-      });
-
-      if (!existing && wallet) {
-        // Estimate unlock time: ~5s per ledger
-        const estimatedUnlockMs = unlockLedger * 5000;
-        await this.prisma.withdrawal.create({
-          data: {
-            wallet,
-            amount: xlmAmount,
-            status: "pending",
-            unlockTime: new Date(Date.now() + estimatedUnlockMs),
-          },
+      if (wallet) {
+        const contractWithdrawalId = BigInt(withdrawalId);
+        const syncedData = {
+          wallet,
+          amount: xlmAmount,
+          status: "pending",
+          unlockLedger,
+          unlockTime: estimateUnlockTime(event.ledger, unlockLedger),
+        };
+        const existing = await this.prisma.withdrawal.findUnique({
+          where: { contractWithdrawalId },
         });
+
+        if (existing) {
+          await this.prisma.withdrawal.update({
+            where: { id: existing.id },
+            data: syncedData,
+          });
+        } else {
+          const legacyPending = await this.prisma.withdrawal.findFirst({
+            where: {
+              wallet,
+              contractWithdrawalId: null,
+              status: "pending",
+            },
+            orderBy: { createdAt: "desc" },
+          });
+
+          if (legacyPending) {
+            await this.prisma.withdrawal.update({
+              where: { id: legacyPending.id },
+              data: {
+                ...syncedData,
+                contractWithdrawalId,
+              },
+            });
+          } else {
+            await this.prisma.withdrawal.create({
+              data: {
+                ...syncedData,
+                contractWithdrawalId,
+              },
+            });
+          }
+        }
       }
 
       // Emit unstake event for delegation manager
@@ -267,20 +294,25 @@ export class EventListenerService {
       const values = decoded as [string, bigint, bigint] | unknown;
       let wallet = "";
       let xlmAmount = BigInt(0);
+      let withdrawalId = 0;
 
-      if (Array.isArray(values) && values.length >= 2) {
+      if (Array.isArray(values) && values.length >= 3) {
         wallet = String(values[0]);
         xlmAmount = BigInt(values[1]);
+        withdrawalId = Number(values[2]);
       }
 
       console.log(
-        `[EventListener] Claim: wallet=${wallet} xlm=${xlmAmount} ledger=${event.ledger}`
+        `[EventListener] Claim: wallet=${wallet} xlm=${xlmAmount} id=${withdrawalId} ledger=${event.ledger}`
       );
 
-      // Mark withdrawal as claimed in DB
       if (wallet) {
         await this.prisma.withdrawal.updateMany({
-          where: { wallet, status: "pending" },
+          where: {
+            wallet,
+            contractWithdrawalId: BigInt(withdrawalId),
+            status: { in: ["pending", "processing", "completed"] },
+          },
           data: { status: "claimed" },
         });
       }

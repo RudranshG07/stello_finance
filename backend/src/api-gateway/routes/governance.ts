@@ -11,13 +11,6 @@ import {
 } from "@stellar/stellar-sdk";
 import { config } from "../../config/index.js";
 import { PrismaClient } from "@prisma/client";
-import {
-  callSetCooldownPeriod,
-  callUpdateCollateralFactor,
-  callUpdateBorrowRate,
-  callUpdateLiquidationThreshold,
-  callSetLpProtocolFeeBps,
-} from "../../staking-engine/contractClient.js";
 
 const createProposalSchema = z.object({
   userAddress: z.string().min(56).max(56),
@@ -111,47 +104,6 @@ async function queryContractView(
   return null;
 }
 
-/**
- * Apply a governance parameter change to the relevant contract.
- * Called after a proposal is successfully executed on-chain.
- */
-async function applyGovernanceParam(paramKey: string, newValue: string): Promise<void> {
-  const value = parseInt(newValue, 10);
-  if (isNaN(value)) {
-    console.warn(`[Governance] Cannot apply param "${paramKey}": invalid value "${newValue}"`);
-    return;
-  }
-
-  try {
-    switch (paramKey) {
-      case "cooldown_period":
-        await callSetCooldownPeriod(value);
-        console.log(`[Governance] Applied cooldown_period = ${value}`);
-        break;
-      case "collateral_factor":
-        await callUpdateCollateralFactor(value);
-        console.log(`[Governance] Applied collateral_factor = ${value} bps`);
-        break;
-      case "borrow_rate_bps":
-        await callUpdateBorrowRate(value);
-        console.log(`[Governance] Applied borrow_rate_bps = ${value}`);
-        break;
-      case "liquidation_threshold":
-        await callUpdateLiquidationThreshold(value);
-        console.log(`[Governance] Applied liquidation_threshold = ${value} bps`);
-        break;
-      case "lp_protocol_fee_bps":
-        await callSetLpProtocolFeeBps(value);
-        console.log(`[Governance] Applied lp_protocol_fee_bps = ${value}`);
-        break;
-      default:
-        console.log(`[Governance] Param "${paramKey}" does not map to a contract call — governance-only param`);
-    }
-  } catch (err) {
-    console.error(`[Governance] Failed to apply param "${paramKey}" = "${newValue}":`, err);
-  }
-}
-
 export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = async (
   fastify,
   opts
@@ -179,20 +131,6 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
         ],
         body.userAddress
       );
-
-      // Also store in DB for quick querying
-      const votingPeriodLedgers = 17280; // ~24h
-      await prisma.governanceProposal.create({
-        data: {
-          proposer: body.userAddress,
-          paramKey: body.paramKey,
-          newValue: body.newValue,
-          status: "active",
-          expiresAt: new Date(
-            Date.now() + votingPeriodLedgers * 5 * 1000 // ~5s per ledger
-          ),
-        },
-      });
 
       return result;
     } catch (err: unknown) {
@@ -258,18 +196,6 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
         body.userAddress
       );
 
-      // Update DB status and apply the parameter change
-      const dbProposal = await prisma.governanceProposal.findFirst({
-        where: { id: body.proposalId + 1 }, // DB is 1-indexed
-      });
-      if (dbProposal) {
-        await prisma.governanceProposal.update({
-          where: { id: dbProposal.id },
-          data: { status: "executed" },
-        });
-        await applyGovernanceParam(dbProposal.paramKey, dbProposal.newValue);
-      }
-
       return result;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Execution failed";
@@ -292,11 +218,6 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
         [nativeToScVal(BigInt(body.proposalId), { type: "u64" })],
         body.userAddress
       );
-
-      await prisma.governanceProposal.updateMany({
-        where: { id: body.proposalId + 1 },
-        data: { status: "queued" },
-      });
 
       return result;
     } catch (err: unknown) {
@@ -321,11 +242,6 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
         body.userAddress
       );
 
-      await prisma.governanceProposal.updateMany({
-        where: { id: body.proposalId + 1 },
-        data: { status: "cancelled" },
-      });
-
       return result;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Cancel failed";
@@ -348,17 +264,6 @@ export const governanceRoutes: FastifyPluginAsync<{ prisma: PrismaClient }> = as
         [nativeToScVal(BigInt(body.proposalId), { type: "u64" })],
         body.userAddress
       );
-
-      const dbProposal = await prisma.governanceProposal.findFirst({
-        where: { id: body.proposalId + 1 },
-      });
-      if (dbProposal) {
-        await prisma.governanceProposal.update({
-          where: { id: dbProposal.id },
-          data: { status: "executed" },
-        });
-        await applyGovernanceParam(dbProposal.paramKey, dbProposal.newValue);
-      }
 
       return result;
     } catch (err: unknown) {

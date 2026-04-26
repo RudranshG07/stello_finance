@@ -52,6 +52,7 @@ async function processQueue(prisma: PrismaClient): Promise<void> {
     const readyWithdrawals = await prisma.withdrawal.findMany({
       where: {
         status: "pending",
+        contractWithdrawalId: { not: null },
         unlockTime: {
           lte: now,
         },
@@ -80,16 +81,23 @@ async function processQueue(prisma: PrismaClient): Promise<void> {
           data: { status: "processing" },
         });
 
+        if (withdrawal.contractWithdrawalId === null) {
+          throw new Error("withdrawal is missing contractWithdrawalId");
+        }
+        if (withdrawal.contractWithdrawalId > BigInt(Number.MAX_SAFE_INTEGER)) {
+          throw new Error("contract withdrawal ID exceeds JavaScript safe integer range");
+        }
+
         // Execute the claim on-chain
         const claimResult = await callClaimWithdrawal(
           withdrawal.wallet,
-          withdrawal.id
+          Number(withdrawal.contractWithdrawalId)
         );
 
-        // Mark as completed
+        // Mark as claimed once the on-chain tx has been confirmed.
         await prisma.withdrawal.update({
           where: { id: withdrawal.id },
-          data: { status: "completed" },
+          data: { status: "claimed" },
         });
 
         // Emit event
