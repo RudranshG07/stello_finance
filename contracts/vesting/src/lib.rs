@@ -434,8 +434,7 @@ mod tests {
         StellarAssetClient::new(&env, &token_address).mint(&admin, &10_000_0000000);
 
         // Deploy vesting contract
-        let vesting_id = env.register(VestingContract, ());
-        let vesting_address = vesting_id.address();
+        let vesting_address = env.register_contract(None, VestingContract);
 
         // Approve vesting contract to pull tokens from admin (or admin will transfer directly)
 
