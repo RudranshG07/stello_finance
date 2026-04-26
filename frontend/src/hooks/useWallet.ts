@@ -42,6 +42,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         isConnecting: false,
         error: null,
         jwtToken: savedToken,
+        connectionAttempts: 0,
+        lastErrorType: null,
       };
     }
     return {
@@ -149,7 +151,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         lastErrorType: null,
       });
     } catch (err: unknown) {
-      const errorInfo = getWalletErrorInfo(err);
+      const errorInfo = getWalletErrorInfo(err instanceof Error ? err : String(err));
       const currentAttempts = stateRef.current.connectionAttempts + 1;
       
       setState((prev) => ({
