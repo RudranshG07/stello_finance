@@ -106,11 +106,10 @@ export async function startApiGateway(deps: GatewayDeps) {
   });
   await fastify.register(unstakeRoutes, {
     stakingEngine: deps.stakingEngine,
-    prisma: deps.prisma,
     prefix: "/api",
   });
   await fastify.register(submitRoutes, {
-    stakingEngine: deps.stakingEngine,
+    prisma: deps.prisma,
     prefix: "/api",
   });
 

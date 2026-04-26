@@ -49,15 +49,18 @@ model RewardSnapshot {
 }
 
 model Withdrawal {
-  id         Int      @id @default(autoincrement())
-  wallet     String
-  amount     BigInt
-  status     String   @default("pending")
-  unlockTime DateTime
-  createdAt  DateTime @default(now())
+  id                   Int      @id @default(autoincrement())
+  wallet               String
+  amount               BigInt
+  status               String   @default("pending")
+  unlockTime           DateTime
+  unlockLedger         Int?
+  contractWithdrawalId BigInt?  @unique
+  createdAt            DateTime @default(now())
 
   @@index([wallet])
   @@index([status])
+  @@index([wallet, contractWithdrawalId])
   @@map("withdrawals")
 }
 

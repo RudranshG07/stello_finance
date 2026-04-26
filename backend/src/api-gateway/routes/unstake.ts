@@ -10,7 +10,6 @@ import {
   Operation,
   BASE_FEE,
 } from "@stellar/stellar-sdk";
-import { PrismaClient } from "@prisma/client";
 import { config } from "../../config/index.js";
 import { StakingEngine } from "../../staking-engine/index.js";
 import { stellarAddressSchema, positiveAmountSchema } from "../middleware/validation.js";
@@ -105,11 +104,11 @@ async function buildRestoreTx(
   return restoreTx.toXDR();
 }
 
-export const unstakeRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine; prisma?: PrismaClient }> = async (
+export const unstakeRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine }> = async (
   fastify,
   opts
 ) => {
-  const { stakingEngine, prisma } = opts;
+  const { stakingEngine } = opts;
   const server = new rpc.Server(config.stellar.rpcUrl);
 
   /**
@@ -231,26 +230,17 @@ export const unstakeRoutes: FastifyPluginAsync<{ stakingEngine: StakingEngine; p
 
       const preparedTx = rpc.assembleTransaction(tx, simResult).build();
       const exchangeRate = await stakingEngine.getExchangeRate();
-
-      // Record pending withdrawal in DB so it appears in the UI list
-      const unlockTime = new Date(Date.now() + config.protocol.unbondingPeriodMs);
-      if (prisma) {
-        await prisma.withdrawal.create({
-          data: {
-            wallet: body.userAddress,
-            amount: sxlmStroops,
-            status: "pending",
-            unlockTime,
-          },
-        }).catch(err => fastify.log.warn(err, "Failed to record withdrawal in DB"));
-      }
+      // This is only an estimate for the unsigned tx preview. The real
+      // withdrawal row is created from the confirmed on-chain event.
+      const estimatedUnlockTime = new Date(Date.now() + config.protocol.unbondingPeriodMs);
 
       return {
         xdr: preparedTx.toXDR(),
         networkPassphrase: config.stellar.networkPassphrase,
         estimatedXlm: (body.amount * exchangeRate).toFixed(7),
         exchangeRate,
-        unlockTime: unlockTime.toISOString(),
+        estimatedUnlockTime: estimatedUnlockTime.toISOString(),
+        unlockTime: estimatedUnlockTime.toISOString(),
       };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : (err as { message?: string })?.message ?? "Unstake failed";

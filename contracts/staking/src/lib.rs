@@ -306,6 +306,9 @@ impl StakingContract {
             let mut queue = get_withdrawal_queue(&env);
             queue.set(id, request);
             set_withdrawal_queue(&env, &queue);
+            // Reserve the XLM immediately so delayed withdrawals do not
+            // inflate the exchange rate for later deposits or exits.
+            write_i128(&env, &DataKey::TotalXlmStaked, total_staked - xlm_to_return);
 
             env.events().publish(
                 (soroban_sdk::symbol_short!("delayed"),),
@@ -336,13 +339,6 @@ impl StakingContract {
         request.claimed = true;
         queue.set(withdrawal_id, request.clone());
         set_withdrawal_queue(&env, &queue);
-
-        let total_staked = read_i128(&env, &DataKey::TotalXlmStaked);
-        write_i128(
-            &env,
-            &DataKey::TotalXlmStaked,
-            total_staked - request.xlm_amount,
-        );
 
         let native_token_addr = read_native_token(&env);
         let xlm_client = token::Client::new(&env, &native_token_addr);
@@ -633,8 +629,8 @@ pub trait SxlmTokenInterface {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::Env;
+    use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
+    use soroban_sdk::{token::StellarAssetClient, Env};
 
     fn setup_staking(env: &Env) -> (StakingContractClient<'_>, Address, Address, Address) {
         let contract_id = env.register_contract(None, StakingContract);
@@ -645,6 +641,52 @@ mod test {
 
         client.initialize(&admin, &sxlm_token, &native_token, &17280u32);
         (client, admin, sxlm_token, native_token)
+    }
+
+    fn setup_staking_with_assets(
+        env: &Env,
+        cooldown_period: u32,
+    ) -> (
+        StakingContractClient<'_>,
+        Address,
+        Address,
+        Address,
+        Address,
+        Address,
+    ) {
+        env.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(env);
+        let user = Address::generate(env);
+        let sxlm_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+        let native_id = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        let contract_id = env.register_contract(None, StakingContract);
+        let client = StakingContractClient::new(env, &contract_id);
+        client.initialize(&admin, &sxlm_id, &native_id, &cooldown_period);
+
+        StellarAssetClient::new(env, &native_id).mint(&user, &10_000_0000000);
+
+        (client, contract_id, admin, user, sxlm_id, native_id)
+    }
+
+    fn advance_ledgers(env: &Env, ledgers: u32) {
+        let current_sequence = env.ledger().sequence();
+        let current_timestamp = env.ledger().timestamp();
+        env.ledger().set(LedgerInfo {
+            timestamp: current_timestamp + (u64::from(ledgers) * 5),
+            protocol_version: env.ledger().protocol_version(),
+            sequence_number: current_sequence + ledgers,
+            network_id: Default::default(),
+            base_reserve: 10,
+            min_temp_entry_ttl: 1,
+            min_persistent_entry_ttl: 1,
+            max_entry_ttl: 10_000_000,
+        });
     }
 
     #[test]
@@ -832,5 +874,50 @@ mod test {
         // Attempting to claim should fail with paused message
         let res = client.try_claim_withdrawal(&user, &0);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_delayed_withdrawal_keeps_exchange_rate_stable() {
+        let env = Env::default();
+        let (client, _, _, user, _, _) = setup_staking_with_assets(&env, 10);
+
+        client.deposit(&user, &20_000);
+        client.add_rewards(&10_000);
+
+        let exchange_rate_before = client.get_exchange_rate();
+        assert_eq!(exchange_rate_before, 14_500_000);
+
+        client.request_withdrawal(&user, &5_000);
+
+        let request = client.get_withdrawal(&0);
+        assert_eq!(request.xlm_amount, 7_250);
+        assert_eq!(request.claimed, false);
+        assert_eq!(request.user, user);
+        assert_eq!(client.total_sxlm_supply(), 15_000);
+        assert_eq!(client.total_xlm_staked(), 21_750);
+        assert_eq!(client.get_exchange_rate(), exchange_rate_before);
+    }
+
+    #[test]
+    fn test_claim_withdrawal_does_not_double_decrement_total_staked() {
+        let env = Env::default();
+        let cooldown = 5u32;
+        let (client, _, _, user, _, native_id) = setup_staking_with_assets(&env, cooldown);
+
+        client.deposit(&user, &20_000);
+        client.add_rewards(&10_000);
+        client.request_withdrawal(&user, &5_000);
+
+        let reserved_total = client.total_xlm_staked();
+        let native_token = soroban_sdk::token::Client::new(&env, &native_id);
+        let balance_before_claim = native_token.balance(&user);
+
+        advance_ledgers(&env, cooldown);
+        client.claim_withdrawal(&user, &0);
+
+        let request = client.get_withdrawal(&0);
+        assert_eq!(request.claimed, true);
+        assert_eq!(client.total_xlm_staked(), reserved_total);
+        assert_eq!(native_token.balance(&user) - balance_before_claim, 7_250);
     }
 }
