@@ -718,6 +718,9 @@ impl LendingContract {
 }
 
 #[cfg(test)]
+mod integration_tests;
+
+#[cfg(test)]
 mod test {
     use super::*;
     use soroban_sdk::testutils::Address as _;
