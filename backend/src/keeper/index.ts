@@ -33,6 +33,7 @@ import {
   getLpAccruedProtocolFees,
   getTreasuryBalance,
 } from "../staking-engine/contractClient.js";
+import { getLogger, ServiceContext } from "../utils/logger.js";
 
 const KEEPER_INTERVAL_MS = 6 * 60 * 60 * 1000;      // 6 hours
 const TTL_BUMP_INTERVAL_MS = 24 * 60 * 60 * 1000;    // 24 hours
@@ -41,6 +42,8 @@ const TIMELOCK_POLL_INTERVAL_MS = 30 * 60 * 1000;    // 30 minutes
 
 const TREASURY_RECYCLE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const TREASURY_RECYCLE_THRESHOLD = BigInt(100_0000000);
+
+const logger = getLogger(ServiceContext.KEEPER);
 
 let keeperInterval: ReturnType<typeof setInterval> | null = null;
 let ttlInterval: ReturnType<typeof setInterval> | null = null;
@@ -56,14 +59,14 @@ export class KeeperBot {
   }
 
   async initialize(): Promise<void> {
-    console.log("[KeeperBot] Initializing...");
+    logger.info("Initializing Keeper Bot", "initialize");
 
     // Run immediately on startup
     await this.runHarvestCycle().catch((err) =>
-      console.error("[KeeperBot] Initial harvest cycle failed:", err)
+      logger.error("Initial harvest cycle failed", "initialize", {}, err)
     );
     await this.bumpAllContractTTLs().catch((err) =>
-      console.error("[KeeperBot] Initial TTL bump failed:", err)
+      logger.error("Initial TTL bump failed", "initialize", {}, err)
     );
 
     // Schedule harvest cycle every 6h
@@ -71,7 +74,7 @@ export class KeeperBot {
       try {
         await this.runHarvestCycle();
       } catch (err) {
-        console.error("[KeeperBot] Harvest cycle error:", err);
+        logger.error("Harvest cycle error", "harvest-cycle", {}, err);
       }
     }, KEEPER_INTERVAL_MS);
 
@@ -80,7 +83,7 @@ export class KeeperBot {
       try {
         await this.bumpAllContractTTLs();
       } catch (err) {
-        console.error("[KeeperBot] TTL bump error:", err);
+        logger.error("TTL bump error", "ttl-bump", {}, err);
       }
     }, TTL_BUMP_INTERVAL_MS);
 
@@ -89,7 +92,7 @@ export class KeeperBot {
       try {
         await this.recalibrateStakingRate();
       } catch (err) {
-        console.error("[KeeperBot] Recalibrate error:", err);
+        logger.error("Recalibrate error", "recalibrate", {}, err);
       }
     }, RECALIBRATE_INTERVAL_MS);
 
@@ -98,7 +101,7 @@ export class KeeperBot {
       try {
         await this.recycleTreasury();
       } catch (err) {
-        console.error("[KeeperBot] Treasury recycle error:", err);
+        logger.error("Treasury recycle error", "treasury-recycle", {}, err);
       }
     }, TREASURY_RECYCLE_INTERVAL_MS);
 
@@ -107,12 +110,20 @@ export class KeeperBot {
       try {
         await this.executeMaturedTimelocks();
       } catch (err) {
-        console.error("[KeeperBot] Timelock poll error:", err);
+        logger.error("Timelock poll error", "timelock-poll", {}, err);
       }
     }, TIMELOCK_POLL_INTERVAL_MS);
 
-    console.log(
-      `[KeeperBot] Running — harvest every ${KEEPER_INTERVAL_MS / 3_600_000}h, TTL bump every ${TTL_BUMP_INTERVAL_MS / 3_600_000}h`
+    logger.info(
+      `Keeper Bot running — harvest every ${KEEPER_INTERVAL_MS / 3_600_000}h, TTL bump every ${TTL_BUMP_INTERVAL_MS / 3_600_000}h`,
+      "initialize",
+      {
+        harvestIntervalHours: KEEPER_INTERVAL_MS / 3_600_000,
+        ttlBumpIntervalHours: TTL_BUMP_INTERVAL_MS / 3_600_000,
+        recalibrateIntervalHours: RECALIBRATE_INTERVAL_MS / 3_600_000,
+        treasuryRecycleIntervalHours: TREASURY_RECYCLE_INTERVAL_MS / 3_600_000,
+        timelockPollIntervalMinutes: TIMELOCK_POLL_INTERVAL_MS / 60_000
+      }
     );
   }
 
@@ -122,7 +133,7 @@ export class KeeperBot {
     if (recalibrateInterval) { clearInterval(recalibrateInterval); recalibrateInterval = null; }
     if (treasuryRecycleInterval) { clearInterval(treasuryRecycleInterval); treasuryRecycleInterval = null; }
     if (timelockPollInterval) { clearInterval(timelockPollInterval); timelockPollInterval = null; }
-    console.log("[KeeperBot] Shut down");
+    logger.info("Keeper Bot shut down", "shutdown");
   }
 
   // ============================================================
@@ -130,7 +141,7 @@ export class KeeperBot {
   // ============================================================
 
   async runHarvestCycle(): Promise<void> {
-    console.log("[KeeperBot] Starting harvest cycle...");
+    logger.info("Starting harvest cycle", "harvest-cycle");
 
     // Step 1: Check how much interest has accrued on the lending contract
     const pendingInterest = await this.queryLendingAccruedInterest();
@@ -145,40 +156,66 @@ export class KeeperBot {
       if (accrued > BigInt(0)) {
         await callCollectProtocolFees();
         lpProtocolFees = accrued;
-        console.log(`[KeeperBot] Collected ${Number(lpProtocolFees) / 1e7} XLM in LP protocol fees`);
+        logger.financial(
+          `Collected LP protocol fees`,
+          accrued,
+          "XLM",
+          "collect-fees",
+          { source: "lp-pool" }
+        );
       }
     } catch (err) {
-      console.warn("[KeeperBot] LP protocol fee collection failed:", err);
+      logger.warn("LP protocol fee collection failed", "collect-fees", { error: err instanceof Error ? err.message : String(err) });
     }
 
     // Step 3: Harvest lending interest
     let harvested = BigInt(0);
     if (pendingInterest > BigInt(0)) {
-      console.log(
-        `[KeeperBot] Pending interest: ${Number(pendingInterest) / 1e7} XLM`
+      logger.financial(
+        "Pending lending interest available",
+        pendingInterest,
+        "XLM",
+        "check-interest",
+        { pendingInterest: pendingInterest.toString() }
       );
       harvested = await this.harvestLendingInterest(pendingInterest);
       if (harvested > BigInt(0)) {
-        console.log(`[KeeperBot] Harvested ${Number(harvested) / 1e7} XLM from lending`);
+        logger.financial(
+          "Harvested lending interest",
+          harvested,
+          "XLM",
+          "harvest-interest",
+          { harvested: harvested.toString() }
+        );
       }
     }
 
     // Step 4: Pipe total yield to add_rewards
     const totalYield = harvested + lpProtocolFees;
     if (totalYield <= BigInt(0)) {
-      console.log("[KeeperBot] No yield to distribute");
+      logger.info("No yield to distribute", "harvest-cycle", { totalYield: "0" });
       return;
     }
 
     try {
       await callAddRewards(totalYield);
-      console.log(
-        `[KeeperBot] add_rewards called with ${Number(totalYield) / 1e7} XLM (lending: ${Number(harvested) / 1e7}, LP fees: ${Number(lpProtocolFees) / 1e7}) — sXLM rate will increase`
+      logger.financial(
+        "Added rewards to staking contract",
+        totalYield,
+        "XLM",
+        "add-rewards",
+        {
+          harvestedXLM: harvested.toString(),
+          lpFeesXLM: lpProtocolFees.toString(),
+          totalYieldXLM: totalYield.toString()
+        }
       );
     } catch (err) {
-      console.error("[KeeperBot] add_rewards failed:", err);
-      console.error(
-        `[KeeperBot] MANUAL ACTION REQUIRED: call add_rewards with ${totalYield} stroops`
+      logger.error("add_rewards failed", "add-rewards", { totalYield: totalYield.toString() }, err instanceof Error ? err : new Error(String(err)));
+      logger.error(
+        "Manual action required: call add_rewards",
+        "manual-action",
+        { totalYieldStroops: totalYield.toString() }
       );
     }
   }
@@ -196,7 +233,7 @@ export class KeeperBot {
       );
       return result != null ? BigInt(result as string | number | bigint) : BigInt(0);
     } catch (err) {
-      console.warn("[KeeperBot] Could not query accrued interest:", err);
+      logger.warn("Could not query accrued interest", "query-interest", { error: err instanceof Error ? err.message : String(err) });
       return BigInt(0);
     }
   }
@@ -212,7 +249,7 @@ export class KeeperBot {
         "harvest_interest",
         []
       );
-      console.log(`[KeeperBot] harvest_interest tx: ${hash}`);
+      logger.transaction("Harvest interest transaction submitted", hash, "harvest-interest");
 
       // The contract harvests min(pending, pool_balance).
       // Re-query after harvest to see how much is left; the difference is what was harvested.
@@ -223,7 +260,7 @@ export class KeeperBot {
 
       return harvested;
     } catch (err) {
-      console.error("[KeeperBot] harvest_interest failed:", err);
+      logger.error("harvest_interest failed", "harvest-interest", {}, err instanceof Error ? err : new Error(String(err)));
       return BigInt(0);
     }
   }
@@ -244,9 +281,9 @@ export class KeeperBot {
     for (const c of contracts) {
       try {
         await this.executeAdminCall(c.id, "bump_instance", []);
-        console.log(`[KeeperBot] TTL bumped: ${c.name}`);
+        logger.info("TTL bumped successfully", "ttl-bump", { contractName: c.name, contractId: c.id });
       } catch (err) {
-        console.error(`[KeeperBot] TTL bump failed for ${c.name}:`, err);
+        logger.error(`TTL bump failed for ${c.name}`, "ttl-bump", { contractName: c.name, contractId: c.id }, err instanceof Error ? err : new Error(String(err)));
         // Non-fatal: log and continue
       }
     }
@@ -263,9 +300,9 @@ export class KeeperBot {
         "recalibrate_rate",
         []
       );
-      console.log("[KeeperBot] Staking rate recalibrated");
+      logger.info("Staking rate recalibrated", "recalibrate");
     } catch (err) {
-      console.error("[KeeperBot] Recalibrate failed:", err);
+      logger.error("Recalibrate failed", "recalibrate", {}, err instanceof Error ? err : new Error(String(err)));
     }
   }
 
@@ -288,11 +325,18 @@ export class KeeperBot {
 
       const accruedFees = await getLpAccruedProtocolFees().catch(() => BigInt(0));
 
-      console.log(
-        `[KeeperBot] LP Pool: reserve_xlm=${xlm.toFixed(2)}, reserve_sxlm=${sxlm.toFixed(2)}, k=${k.toFixed(2)}, accrued_protocol_fees=${Number(accruedFees) / 1e7} XLM`
+      logger.info(
+        "LP Pool stats",
+        "lp-stats",
+        {
+          reserveXLM: xlm.toFixed(2),
+          reserveSxlm: sxlm.toFixed(2),
+          constantK: k.toFixed(2),
+          accruedProtocolFeesXLM: Number(accruedFees) / 1e7
+        }
       );
     } catch (err) {
-      console.warn("[KeeperBot] Could not query LP pool stats:", err);
+      logger.warn("Could not query LP pool stats", "lp-stats", { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -305,23 +349,44 @@ export class KeeperBot {
       const treasuryBal = await getTreasuryBalance();
 
       if (treasuryBal < TREASURY_RECYCLE_THRESHOLD) {
-        console.log(
-          `[KeeperBot] Treasury balance ${Number(treasuryBal) / 1e7} XLM below threshold (${Number(TREASURY_RECYCLE_THRESHOLD) / 1e7} XLM) — skipping recycle`
+        logger.info(
+          "Treasury balance below threshold, skipping recycle",
+          "treasury-recycle",
+          {
+            treasuryBalanceXLM: Number(treasuryBal) / 1e7,
+            thresholdXLM: Number(TREASURY_RECYCLE_THRESHOLD) / 1e7
+          }
         );
         return;
       }
 
-      console.log(`[KeeperBot] Recycling treasury: ${Number(treasuryBal) / 1e7} XLM`);
+      logger.financial(
+        "Recycling treasury",
+        treasuryBal,
+        "XLM",
+        "treasury-recycle",
+        { action: "withdraw-and-recycle" }
+      );
 
       await callWithdrawFees(treasuryBal);
-      console.log(`[KeeperBot] Withdrew ${Number(treasuryBal) / 1e7} XLM from treasury`);
+      logger.financial(
+        "Withdrew fees from treasury",
+        treasuryBal,
+        "XLM",
+        "withdraw-fees",
+        { destination: "admin_wallet" }
+      );
 
       await callAddRewards(treasuryBal);
-      console.log(
-        `[KeeperBot] Recycled ${Number(treasuryBal) / 1e7} XLM treasury → add_rewards — stakers get ~100% of yield`
+      logger.financial(
+        "Recycled treasury to staking rewards",
+        treasuryBal,
+        "XLM",
+        "add-rewards",
+        { source: "treasury", destination: "stakers" }
       );
     } catch (err) {
-      console.error("[KeeperBot] Treasury recycle failed:", err);
+      logger.error("Treasury recycle failed", "treasury-recycle", {}, err instanceof Error ? err : new Error(String(err)));
     }
   }
 
@@ -361,7 +426,15 @@ export class KeeperBot {
         const eta = Number(entry.eta_ledger ?? 0);
         if (currentLedger < eta) continue;
 
-        console.log(`[KeeperBot] Executing matured timelock for proposal ${i} (eta=${eta}, current=${currentLedger})`);
+        logger.info(
+          "Executing matured timelock",
+          "timelock-execute",
+          {
+            proposalId: i,
+            etaLedger: eta,
+            currentLedger: currentLedger
+          }
+        );
 
         await this.executeAdminCall(govContractId, "execute_queued", [
           nativeToScVal(BigInt(i), { type: "u64" }),
@@ -374,9 +447,17 @@ export class KeeperBot {
           await this.applyGovernanceParam(paramKey, newValue);
         }
 
-        console.log(`[KeeperBot] Proposal ${i} executed: ${paramKey} = ${newValue}`);
+        logger.info(
+          "Proposal executed successfully",
+          "timelock-execute",
+          {
+            proposalId: i,
+            paramKey,
+            newValue
+          }
+        );
       } catch (err) {
-        console.warn(`[KeeperBot] Could not process timelock for proposal ${i}:`, err);
+        logger.warn(`Could not process timelock for proposal ${i}`, "timelock-execute", { proposalId: i, error: err instanceof Error ? err.message : String(err) });
       }
     }
   }
@@ -396,10 +477,10 @@ export class KeeperBot {
         case "liquidation_threshold": await callUpdateLiquidationThreshold(value); break;
         case "lp_protocol_fee_bps":   await callSetLpProtocolFeeBps(value); break;
         default:
-          console.log(`[KeeperBot] Param "${paramKey}" is governance-only, no contract call needed`);
+          logger.info(`Param "${paramKey}" is governance-only, no contract call needed`, "apply-param", { paramKey });
       }
     } catch (err) {
-      console.error(`[KeeperBot] Failed to apply param "${paramKey}":`, err);
+      logger.error(`Failed to apply param "${paramKey}"`, "apply-param", { paramKey, value }, err instanceof Error ? err : new Error(String(err)));
     }
   }
 

@@ -2,6 +2,9 @@ import { PrismaClient } from "@prisma/client";
 import { getEventBus, EventType } from "../event-bus/index.js";
 import { config } from "../config/index.js";
 import { callApplySlashing, callPause, callUnpause } from "../staking-engine/contractClient.js";
+import { getLogger, ServiceContext } from "../utils/logger.js";
+
+const logger = getLogger(ServiceContext.RISK_ENGINE);
 
 let monitorInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -20,16 +23,16 @@ export class RiskEngine {
   }
 
   async initialize(): Promise<void> {
-    console.log("[RiskEngine] Initializing...");
+    logger.info("Initializing Risk Engine", "initialize");
 
     const eventBus = getEventBus();
     await eventBus.subscribe(EventType.VALIDATOR_DOWN, async (data) => {
-      console.warn(`[RiskEngine] Validator down alert: ${data.pubkey}`);
+      logger.warn("Validator down alert detected", "validator-down", { pubkey: data.pubkey, uptime: data.uptime });
       await this.handleValidatorDown(data.pubkey, data.uptime);
     });
 
     await eventBus.subscribe(EventType.REBALANCE_REQUIRED, async (data) => {
-      console.warn(`[RiskEngine] Rebalance required: ${data.reason}`);
+      logger.warn("Rebalance required", "rebalance-required", { reason: data.reason });
       await this.executeAutoReallocation(data.reason);
     });
 
@@ -37,11 +40,11 @@ export class RiskEngine {
       try {
         await this.runHealthCheck();
       } catch (err) {
-        console.error("[RiskEngine] Health check error:", err);
+        logger.error("Health check error", "health-check", {}, err as Error);
       }
     }, 60_000);
 
-    console.log("[RiskEngine] Initialized");
+    logger.info("Risk Engine initialized successfully", "initialize");
   }
 
   async shutdown(): Promise<void> {
@@ -49,7 +52,7 @@ export class RiskEngine {
       clearInterval(monitorInterval);
       monitorInterval = null;
     }
-    console.log("[RiskEngine] Shut down");
+    logger.info("Risk Engine shut down", "shutdown");
   }
 
   private async runHealthCheck(): Promise<void> {
@@ -63,14 +66,18 @@ export class RiskEngine {
     if (downValidators.length > validators.length * 0.3) {
       if (!this.emergencyMode) {
         this.emergencyMode = true;
-        console.error("[RiskEngine] EMERGENCY MODE ACTIVATED — >30% validators down");
+        logger.error("EMERGENCY MODE ACTIVATED", "emergency-activation", { 
+          downValidators: downValidators.length, 
+          totalValidators: validators.length,
+          threshold: 0.3 
+        });
 
         // Pause protocol on-chain
         try {
           await callPause();
-          console.log("[RiskEngine] Protocol paused on-chain");
+          logger.info("Protocol paused on-chain", "emergency-pause");
         } catch (err) {
-          console.error("[RiskEngine] Failed to pause on-chain:", err);
+          logger.error("Failed to pause protocol on-chain", "emergency-pause-failed", {}, err as Error);
         }
 
         const eventBus = getEventBus();
@@ -91,14 +98,14 @@ export class RiskEngine {
       }
     } else if (this.emergencyMode && downValidators.length === 0) {
       this.emergencyMode = false;
-      console.log("[RiskEngine] Emergency mode deactivated — all validators healthy");
+      logger.info("Emergency mode deactivated - all validators healthy", "emergency-deactivation");
 
       // Unpause protocol on-chain
       try {
         await callUnpause();
-        console.log("[RiskEngine] Protocol unpaused on-chain");
+        logger.info("Protocol unpaused on-chain", "emergency-unpause");
       } catch (err) {
-        console.error("[RiskEngine] Failed to unpause on-chain:", err);
+        logger.error("Failed to unpause protocol on-chain", "emergency-unpause-failed", {}, err as Error);
       }
 
       await this.sendGovernanceNotification(
@@ -113,8 +120,16 @@ export class RiskEngine {
         (Date.now() - validator.lastChecked.getTime()) / (1000 * 60 * 60);
 
       if (hoursSinceCheck > 2 && validator.uptime < 0.9) {
-        console.warn(
-          `[RiskEngine] Slashing risk for ${validator.pubkey} — uptime ${(validator.uptime * 100).toFixed(1)}%, stale for ${hoursSinceCheck.toFixed(1)}h`
+        logger.warn(
+          "Slashing risk detected for validator",
+          "slashing-risk",
+          {
+            pubkey: validator.pubkey,
+            uptime: validator.uptime,
+            uptimePercent: (validator.uptime * 100).toFixed(1),
+            hoursSinceCheck: hoursSinceCheck.toFixed(1),
+            lastChecked: validator.lastChecked
+          }
         );
 
         const eventBus = getEventBus();
@@ -167,8 +182,17 @@ export class RiskEngine {
       const deviation = Math.abs(actualFraction - targetFraction);
 
       if (deviation > config.protocol.rebalanceThreshold) {
-        console.log(
-          `[RiskEngine] Allocation deviation for ${v.pubkey}: actual=${(actualFraction * 100).toFixed(1)}% target=${(targetFraction * 100).toFixed(1)}%`
+        logger.info(
+          "Allocation deviation detected",
+          "allocation-deviation",
+          {
+            pubkey: v.pubkey,
+            actualPercent: (actualFraction * 100).toFixed(1),
+            targetPercent: (targetFraction * 100).toFixed(1),
+            deviation: deviation,
+            actualStake: v.allocatedStake.toString(),
+            targetStake: BigInt(Math.floor(Number(totalStake) * targetFraction)).toString()
+          }
         );
 
         const eventBus = getEventBus();
@@ -189,14 +213,17 @@ export class RiskEngine {
    * Execute auto-reallocation: move stake from underperforming validators to healthy ones.
    */
   private async executeAutoReallocation(reason: string): Promise<void> {
-    console.log(`[RiskEngine] Executing auto-reallocation (reason: ${reason})...`);
+    logger.info("Executing auto-reallocation", "auto-reallocation", { reason });
 
     const validators = await this.prisma.validator.findMany({
       orderBy: { performanceScore: "desc" },
     });
 
     if (validators.length < 2) {
-      console.log("[RiskEngine] Not enough validators for reallocation");
+      logger.warn("Not enough validators for reallocation", "auto-reallocation", { 
+        validatorCount: validators.length, 
+        required: 2 
+      });
       return;
     }
 
@@ -208,7 +235,10 @@ export class RiskEngine {
     );
 
     if (healthy.length === 0 || unhealthy.length === 0) {
-      console.log("[RiskEngine] No reallocation needed");
+      logger.info("No reallocation needed", "auto-reallocation", { 
+        healthyCount: healthy.length, 
+        unhealthyCount: unhealthy.length 
+      });
       return;
     }
 
@@ -256,8 +286,16 @@ export class RiskEngine {
 
     // Apply reallocation in DB (in production, this would also call contracts)
     for (const plan of plans) {
-      console.log(
-        `[RiskEngine] Reallocating ${plan.amount} stroops: ${plan.fromValidator} → ${plan.toValidator}`
+      logger.financial(
+        "Reallocating stake between validators",
+        plan.amount,
+        "XLM",
+        "stake-reallocation",
+        {
+          fromValidator: plan.fromValidator,
+          toValidator: plan.toValidator,
+          amountStroops: plan.amount.toString()
+        }
       );
 
       await this.prisma.validator.update({
@@ -279,8 +317,14 @@ export class RiskEngine {
       });
     }
 
-    console.log(
-      `[RiskEngine] Auto-reallocation complete: ${plans.length} moves executed`
+    logger.info(
+      "Auto-reallocation completed",
+      "auto-reallocation-complete",
+      {
+        plansExecuted: plans.length,
+        totalStakeRedistributed: stakeToRedistribute.toString(),
+        reason: reason
+      }
     );
 
     await this.sendGovernanceNotification(
@@ -294,8 +338,15 @@ export class RiskEngine {
     uptime: number
   ): Promise<void> {
     if (uptime < 0.85) {
-      console.error(
-        `[RiskEngine] Critical: validator ${pubkey} uptime ${(uptime * 100).toFixed(1)}% — triggering reallocation`
+      logger.error(
+        "Critical validator uptime detected - triggering reallocation",
+        "critical-validator-uptime",
+        {
+          pubkey: pubkey,
+          uptime: uptime,
+          uptimePercent: (uptime * 100).toFixed(1),
+          threshold: 0.85
+        }
       );
 
       // Apply slashing on-chain: estimate 5% loss for severely down validators
@@ -311,8 +362,16 @@ export class RiskEngine {
         if (slashAmount > BigInt(0)) {
           try {
             await callApplySlashing(slashAmount);
-            console.warn(
-              `[RiskEngine] Applied slashing: ${Number(slashAmount) / 1e7} XLM for validator ${pubkey}`
+            logger.warn(
+              "Applied slashing for validator",
+              "slashing-applied",
+              {
+                pubkey: pubkey,
+                slashAmount: slashAmount.toString(),
+                slashAmountFormatted: (Number(slashAmount) / 1e7).toFixed(2),
+                slashPercent: (slashPercent * 100).toFixed(0),
+                uptime: (uptime * 100).toFixed(1)
+              }
             );
 
             // Emit slashing event for withdrawal queue recalculation
@@ -328,7 +387,7 @@ export class RiskEngine {
               `Applied ${(slashPercent * 100).toFixed(0)}% slash (${(Number(slashAmount) / 1e7).toFixed(2)} XLM) for validator ${pubkey} (uptime: ${(uptime * 100).toFixed(1)}%)`
             );
           } catch (err) {
-            console.error("[RiskEngine] On-chain slashing failed:", err);
+            logger.error("On-chain slashing failed", "slashing-failed", { pubkey }, err as Error);
           }
         }
       }
@@ -381,7 +440,7 @@ export class RiskEngine {
           }),
         });
       } catch (err) {
-        console.error("[RiskEngine] Slack notification failed:", err);
+        logger.error("Slack notification failed", "slack-notification-failed", { level, message }, err as Error);
       }
     }
 
@@ -394,11 +453,11 @@ export class RiskEngine {
           body: JSON.stringify(payload),
         });
       } catch (err) {
-        console.error("[RiskEngine] Governance webhook failed:", err);
+        logger.error("Governance webhook failed", "governance-webhook-failed", { level, message }, err as Error);
       }
     }
 
-    console.log(`[RiskEngine] Notification sent: [${level}] ${message}`);
+    logger.info("Notification sent", "notification-sent", { level, message });
   }
 
   isEmergencyMode(): boolean {

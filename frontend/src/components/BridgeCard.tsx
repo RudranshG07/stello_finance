@@ -56,7 +56,7 @@ export default function BridgeCard() {
     (direction === 'stellar_to_evm' ? isValidEvmAddress : isValidStellarAddress);
 
   // Poll relayer for tx status
-  const pollStatus = async (txHash: string, direction: BridgeDirection) => {
+  const pollStatus = async (txHash: string, _direction: BridgeDirection) => {
     const maxAttempts = 60; // 5 minutes at 5s intervals
     let attempts = 0;
 

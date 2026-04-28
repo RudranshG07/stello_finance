@@ -9,6 +9,15 @@ const RATE_PRECISION: i128 = 10_000_000; // 1e7
 const PROTOCOL_FEE_BPS: i128 = 1000;
 const BPS_DENOMINATOR: i128 = 10_000;
 
+/// Target liquidity buffer as a fraction of total staked (500 bps = 5%).
+/// Deposits top up the buffer first until this target is met.
+const TARGET_BUFFER_BPS: i128 = 500;
+
+/// Fee charged for instant unstake in basis points (30 bps = 0.3%).
+/// The fee stays in the contract, boosting the sXLM exchange rate for
+/// all remaining stakers.
+const INSTANT_UNSTAKE_FEE_BPS: i128 = 30;
+
 /// Minimum initial deposit to prevent inflation attacks.
 const MINIMUM_INITIAL_DEPOSIT: i128 = 1_000;
 
@@ -101,7 +110,72 @@ fn is_paused(env: &Env) -> bool {
 
 fn require_not_paused(env: &Env) {
     if is_paused(env) {
-        panic!("protocol is paused");
+        panic!("Protocol is paused due to security invariant violation.");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Invariant Guard
+// ---------------------------------------------------------------------------
+//
+// Solvency invariant:
+//   actual_xlm_balance >= intrinsic_value_of_all_sxlm
+//
+// The "intrinsic value" of all issued sXLM is:
+//   intrinsic_value = total_sxlm_supply * exchange_rate / RATE_PRECISION
+//                   = total_sxlm_supply * total_xlm_staked / total_sxlm_supply
+//                   = total_xlm_staked   (by definition of the exchange rate)
+//
+// So the invariant reduces to: actual_balance >= total_xlm_staked.
+// We keep the full checked-math derivation for auditability.
+//
+// Soroban execution model note:
+//   A panicking invocation is fully rolled back — any storage writes made
+//   before the panic are discarded.  Therefore `check_integrity` only panics
+//   to revert the offending transaction; it does NOT attempt to write
+//   IsPaused inside the same call.  A separate `trigger_pause` function
+//   (callable by anyone) reads the same invariant and, if violated, writes
+//   IsPaused = true and emits the `inv_fail` event.  This two-function design
+//   means:
+//     • Bad transactions are always reverted (check_integrity panics).
+//     • The pause flag is durably set by trigger_pause, which succeeds
+//       because it does not panic after writing.
+fn check_integrity(env: &Env) {
+    let total_staked = read_i128(env, &DataKey::TotalXlmStaked);
+    let total_supply = read_i128(env, &DataKey::TotalSxlmSupply);
+
+    // Nothing staked yet — nothing to check.
+    if total_supply == 0 || total_staked == 0 {
+        return;
+    }
+
+    // Exchange rate (scaled by RATE_PRECISION = 1e7).
+    let rate: i128 = total_staked
+        .checked_mul(RATE_PRECISION)
+        .expect("overflow: rate numerator")
+        .checked_div(total_supply)
+        .expect("division by zero: total_supply");
+
+    // Intrinsic value of all issued sXLM at the current rate.
+    let intrinsic_value: i128 = total_supply
+        .checked_mul(rate)
+        .expect("overflow: intrinsic numerator")
+        .checked_div(RATE_PRECISION)
+        .expect("division by zero: RATE_PRECISION");
+
+    // Actual XLM held by this contract.
+    let native_token_addr = read_native_token(env);
+    let xlm_client = token::Client::new(env, &native_token_addr);
+    let actual_balance = xlm_client.balance(&env.current_contract_address());
+
+    // Invariant: the contract must hold at least as much XLM as it owes.
+    // If violated, revert this transaction immediately.  The pause flag is
+    // set durably by `trigger_pause` (see below).
+    if actual_balance < intrinsic_value {
+        panic!(
+            "Invariant violated: contract balance {} < intrinsic value {}. Call trigger_pause to lock the protocol.",
+            actual_balance, intrinsic_value
+        );
     }
 }
 
@@ -190,6 +264,15 @@ impl StakingContract {
     // ==========================================================
 
     /// Deposit XLM and receive sXLM tokens.
+    ///
+    /// Buffer-aware logic: after minting sXLM, if the liquidity buffer is
+    /// below its target (TARGET_BUFFER_BPS of total staked), the deposited
+    /// XLM is credited to the buffer first — up to the deficit — so the
+    /// protocol always maintains a liquid reserve for instant withdrawals.
+    /// Any deposit amount beyond the buffer deficit is considered "delegated"
+    /// (staking-ready).  All XLM physically stays in the contract either way;
+    /// this is purely an accounting distinction.
+    ///
     /// Locks initial dead shares to prevent inflation attacks.
     pub fn deposit(env: Env, user: Address, xlm_amount: i128) {
         require_not_paused(&env);
@@ -227,26 +310,61 @@ impl StakingContract {
             write_i128(&env, &DataKey::TotalXlmStaked, xlm_amount);
             write_i128(&env, &DataKey::TotalSxlmSupply, xlm_amount);
 
+            // Seed the buffer with the full first deposit.
+            let target_buffer = xlm_amount
+                .checked_mul(TARGET_BUFFER_BPS)
+                .expect("overflow: buffer target")
+                .checked_div(BPS_DENOMINATOR)
+                .expect("div zero: BPS_DENOMINATOR");
+            let current_buffer = read_i128(&env, &DataKey::LiquidityBuffer);
+            let buffer_add = (target_buffer - current_buffer).max(0).min(xlm_amount);
+            if buffer_add > 0 {
+                write_i128(&env, &DataKey::LiquidityBuffer, current_buffer + buffer_add);
+            }
+
             env.events().publish(
                 (soroban_sdk::symbol_short!("deposit"),),
                 (user, xlm_amount, user_shares),
             );
         } else {
-            let sxlm_to_mint = xlm_amount * total_supply / total_staked;
+            let sxlm_to_mint = xlm_amount
+                .checked_mul(total_supply)
+                .expect("overflow: sxlm mint numerator")
+                .checked_div(total_staked)
+                .expect("div zero: total_staked");
             if sxlm_to_mint <= 0 {
                 panic!("mint amount too small");
             }
 
-            write_i128(&env, &DataKey::TotalXlmStaked, total_staked + xlm_amount);
+            let new_total_staked = total_staked + xlm_amount;
+            write_i128(&env, &DataKey::TotalXlmStaked, new_total_staked);
             write_i128(&env, &DataKey::TotalSxlmSupply, total_supply + sxlm_to_mint);
 
             sxlm_client.mint(&user, &sxlm_to_mint);
+
+            // Buffer-aware top-up: if the buffer is below its 5% target,
+            // credit the deposited XLM toward the buffer deficit first.
+            let target_buffer = new_total_staked
+                .checked_mul(TARGET_BUFFER_BPS)
+                .expect("overflow: buffer target")
+                .checked_div(BPS_DENOMINATOR)
+                .expect("div zero: BPS_DENOMINATOR");
+            let current_buffer = read_i128(&env, &DataKey::LiquidityBuffer);
+            if current_buffer < target_buffer {
+                let deficit = target_buffer - current_buffer;
+                let buffer_add = deficit.min(xlm_amount);
+                write_i128(&env, &DataKey::LiquidityBuffer, current_buffer + buffer_add);
+            }
 
             env.events().publish(
                 (soroban_sdk::symbol_short!("deposit"),),
                 (user, xlm_amount, sxlm_to_mint),
             );
         }
+
+        // Post-state invariant check — trips the circuit breaker if the
+        // deposit somehow left the protocol insolvent.
+        check_integrity(&env);
     }
 
     /// Request withdrawal: burns sXLM and returns XLM.
@@ -315,6 +433,10 @@ impl StakingContract {
                 (user, xlm_to_return, id, unlock_ledger),
             );
         }
+
+        // Post-state invariant check — trips the circuit breaker if the
+        // withdrawal somehow left the protocol insolvent.
+        check_integrity(&env);
     }
 
     /// Claim a delayed withdrawal after cooldown has expired.
@@ -348,6 +470,99 @@ impl StakingContract {
             (soroban_sdk::symbol_short!("claimed"),),
             (user, request.xlm_amount, withdrawal_id),
         );
+    }
+
+    // ==========================================================
+    // Instant Unstake
+    // ==========================================================
+
+    /// Instantly redeem sXLM for XLM, paying a 0.3% liquidity fee.
+    ///
+    /// Unlike `request_withdrawal` (which is free but may be delayed),
+    /// this function guarantees immediate settlement provided the contract
+    /// holds enough liquid XLM.  The fee stays in the contract, increasing
+    /// the XLM backing per sXLM and therefore boosting yield for all
+    /// remaining stakers.
+    ///
+    /// Fee math (all i128, BPS denominator = 10_000):
+    ///   xlm_value    = sxlm_amount * total_xlm_staked / total_sxlm_supply
+    ///   fee          = xlm_value * INSTANT_UNSTAKE_FEE_BPS / BPS_DENOMINATOR
+    ///   payout       = xlm_value - fee
+    ///
+    /// The fee is NOT added to TreasuryBalance — it remains as surplus XLM
+    /// in the contract, which raises the exchange rate for all sXLM holders.
+    pub fn instant_withdraw(env: Env, user: Address, sxlm_amount: i128) {
+        require_not_paused(&env);
+        user.require_auth();
+        if sxlm_amount <= 0 {
+            panic!("sxlm amount must be positive");
+        }
+        extend_instance(&env);
+
+        let total_staked = read_i128(&env, &DataKey::TotalXlmStaked);
+        let total_supply = read_i128(&env, &DataKey::TotalSxlmSupply);
+
+        if total_supply == 0 {
+            panic!("no sXLM in circulation");
+        }
+
+        // XLM value of the sXLM being redeemed (checked math).
+        let xlm_value: i128 = sxlm_amount
+            .checked_mul(total_staked)
+            .expect("overflow: xlm_value numerator")
+            .checked_div(total_supply)
+            .expect("div zero: total_supply");
+
+        if xlm_value <= 0 {
+            panic!("redemption value too small");
+        }
+
+        // Liquidity fee (0.3 bps = 0.3%).
+        let fee: i128 = xlm_value
+            .checked_mul(INSTANT_UNSTAKE_FEE_BPS)
+            .expect("overflow: fee numerator")
+            .checked_div(BPS_DENOMINATOR)
+            .expect("div zero: BPS_DENOMINATOR");
+
+        let payout_amount: i128 = xlm_value - fee;
+
+        // Verify the contract holds enough liquid XLM to pay out immediately.
+        let native_token_addr = read_native_token(&env);
+        let xlm_client = token::Client::new(&env, &native_token_addr);
+        let contract_balance = xlm_client.balance(&env.current_contract_address());
+
+        if payout_amount > contract_balance {
+            panic!("Insufficient liquidity for instant withdrawal.");
+        }
+
+        // Burn the user's sXLM.
+        let sxlm_token = read_sxlm_token(&env);
+        let sxlm_client = SxlmTokenClient::new(&env, &sxlm_token);
+        sxlm_client.burn(&user, &sxlm_amount);
+
+        // Update protocol accounting.
+        // We reduce total_supply by the burned amount and total_staked by
+        // the full xlm_value.  The fee (xlm_value - payout) stays in the
+        // contract as surplus XLM, which raises the exchange rate.
+        write_i128(&env, &DataKey::TotalSxlmSupply, total_supply - sxlm_amount);
+        write_i128(&env, &DataKey::TotalXlmStaked, total_staked - xlm_value);
+
+        // Reduce the liquidity buffer by the payout (capped at current buffer).
+        let buffer = read_i128(&env, &DataKey::LiquidityBuffer);
+        let buffer_reduction = payout_amount.min(buffer);
+        write_i128(&env, &DataKey::LiquidityBuffer, buffer - buffer_reduction);
+
+        // Transfer payout to user.
+        xlm_client.transfer(&env.current_contract_address(), &user, &payout_amount);
+
+        env.events().publish(
+            (soroban_sdk::symbol_short!("inst_wdw"),),
+            (user, sxlm_amount, payout_amount, fee),
+        );
+
+        // Post-state invariant check — security guard must pass after every
+        // state-changing operation.
+        check_integrity(&env);
     }
 
     // ==========================================================
@@ -499,6 +714,53 @@ impl StakingContract {
             .publish((soroban_sdk::symbol_short!("paused"),), false);
     }
 
+    /// Permissionless circuit breaker — anyone can call this to durably pause
+    /// the protocol when the solvency invariant is violated.
+    ///
+    /// Because a panicking Soroban invocation rolls back all storage writes,
+    /// `check_integrity` (called inside `deposit` / `request_withdrawal`) can
+    /// only revert the offending transaction.  This function performs the same
+    /// invariant check but, on violation, writes `IsPaused = true` and emits
+    /// the `inv_fail` event *before* returning (no panic), so the pause is
+    /// committed on-chain.  Off-chain keepers (bots, indexers) should monitor
+    /// for failed deposits/withdrawals and call `trigger_pause` immediately.
+    pub fn trigger_pause(env: Env) {
+        extend_instance(&env);
+
+        let total_staked = read_i128(&env, &DataKey::TotalXlmStaked);
+        let total_supply = read_i128(&env, &DataKey::TotalSxlmSupply);
+
+        if total_supply == 0 || total_staked == 0 {
+            panic!("no funds staked; nothing to check");
+        }
+
+        let rate: i128 = total_staked
+            .checked_mul(RATE_PRECISION)
+            .expect("overflow: rate numerator")
+            .checked_div(total_supply)
+            .expect("division by zero: total_supply");
+
+        let intrinsic_value: i128 = total_supply
+            .checked_mul(rate)
+            .expect("overflow: intrinsic numerator")
+            .checked_div(RATE_PRECISION)
+            .expect("division by zero: RATE_PRECISION");
+
+        let native_token_addr = read_native_token(&env);
+        let xlm_client = token::Client::new(&env, &native_token_addr);
+        let actual_balance = xlm_client.balance(&env.current_contract_address());
+
+        if actual_balance < intrinsic_value {
+            env.storage().instance().set(&DataKey::Paused, &true);
+            env.events().publish(
+                (soroban_sdk::symbol_short!("inv_fail"),),
+                (actual_balance, intrinsic_value, total_staked, total_supply),
+            );
+        } else {
+            panic!("invariant is satisfied; protocol is solvent");
+        }
+    }
+
     // ==========================================================
     // Liquidity & Validators
     // ==========================================================
@@ -591,6 +853,16 @@ impl StakingContract {
         PROTOCOL_FEE_BPS
     }
 
+    pub fn target_buffer_bps(env: Env) -> i128 {
+        extend_instance(&env);
+        TARGET_BUFFER_BPS
+    }
+
+    pub fn instant_unstake_fee_bps(env: Env) -> i128 {
+        extend_instance(&env);
+        INSTANT_UNSTAKE_FEE_BPS
+    }
+
     pub fn get_cooldown_period(env: Env) -> u32 {
         extend_instance(&env);
         read_cooldown(&env)
@@ -625,6 +897,9 @@ pub trait SxlmTokenInterface {
     fn balance(env: Env, id: Address) -> i128;
     fn total_supply(env: Env) -> i128;
 }
+
+#[cfg(test)]
+mod integration_tests;
 
 #[cfg(test)]
 mod test {

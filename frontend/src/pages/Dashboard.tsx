@@ -124,7 +124,7 @@ function StellarHeroVisual({ aprVal }: { aprVal: string }) {
 
 /* ── Numbered block (Lido pattern) ───────────────────────────────────────── */
 function NumberedBlock({
-  num, title, desc, tag, accentTag = Y, delay = 0, isLast = false,
+  num, title, desc, tag, _accentTag = Y, delay = 0, isLast = false,
 }: {
   num: string; title: string; desc: string; tag?: string;
   accentTag?: string; delay?: number; isLast?: boolean;
