@@ -233,3 +233,7 @@ xlmLR/
 ## License
 
 See repository license file.
+## Improvements
+
+- Improved documentation clarity
+- Added better explanation for liquid staking workflow
