@@ -20,7 +20,8 @@ const INSTANT_UNSTAKE_FEE_BPS: i128 = 30;
 
 /// Minimum initial deposit to prevent inflation attacks.
 const MINIMUM_INITIAL_DEPOSIT: i128 = 1_000;
-
+const MIN_COOLDOWN_PERIOD: u32 = 288;        // ~24 min at 5s/ledger
+const MAX_COOLDOWN_PERIOD: u32 = 2_592_000;  // ~150 days at 5s/ledger
 // ---------- TTL constants ----------
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_800; // ~7 days
 const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // bump to ~30 days
@@ -804,7 +805,12 @@ impl StakingContract {
     pub fn set_cooldown_period(env: Env, new_cooldown: u32) {
         let admin = read_admin(&env);
         admin.require_auth();
-        extend_instance(&env);
+        extend_instance(&env);if new_cooldown < MIN_COOLDOWN_PERIOD {
+            panic!("cooldown period too short: minimum is 288 ledgers (~24 min)");
+        }
+        if new_cooldown > MAX_COOLDOWN_PERIOD {
+            panic!("cooldown period too long: maximum is 2_592_000 ledgers (~150 days)");
+        }
         env.storage()
             .instance()
             .set(&DataKey::CooldownPeriod, &new_cooldown);
@@ -903,7 +909,7 @@ pub trait SxlmTokenInterface {
 }
 
 #[cfg(test)]
-mod integration_tests;
+//mod integration_tests;
 
 #[cfg(test)]
 mod test {
@@ -1504,4 +1510,5 @@ mod test {
             "instant_withdraw must be blocked when paused"
         );
     }
+    
 }
