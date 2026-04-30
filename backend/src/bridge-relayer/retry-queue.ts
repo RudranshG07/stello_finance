@@ -41,19 +41,22 @@ export class RetryQueue {
   /**
    * Add a failed operation to the retry queue
    */
-  async add(item: Omit<RetryItem, "id" | "attempts" | "nextRetryAt" | "createdAt">): Promise<void> {
+  async add(
+    item: Omit<RetryItem, "id" | "attempts" | "nextRetryAt" | "createdAt">,
+  ): Promise<void> {
+    const now = Date.now();
     const retryItem: RetryItem = {
       ...item,
-      id: `${item.type}_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      id: `${item.type}_${now}_${Math.random().toString(36).substr(2, 9)}`,
       attempts: 0,
-      nextRetryAt: Date.now() + this.config.initialDelayMs,
-      createdAt: Date.now(),
+      nextRetryAt: now, // ready immediately; delay only applies to re-queued retries
+      createdAt: now,
     };
 
     await this.redis.zadd(
       "bridge_retry_queue",
       retryItem.nextRetryAt,
-      JSON.stringify(retryItem)
+      JSON.stringify(retryItem),
     );
 
     console.log(`[retry-queue] added item ${retryItem.id} for retry`);
@@ -77,12 +80,12 @@ export class RetryQueue {
         now,
         "LIMIT",
         0,
-        10 // Process max 10 items at a time
+        10, // Process max 10 items at a time
       );
 
       for (const itemStr of readyItems) {
         const item: RetryItem = JSON.parse(itemStr);
-        
+
         try {
           // Process the item based on its type
           if (item.type === "evm_to_stellar") {
@@ -94,26 +97,29 @@ export class RetryQueue {
           // Success - remove from queue
           await this.redis.zrem("bridge_retry_queue", itemStr);
           console.log(`[retry-queue] successfully processed item ${item.id}`);
-
         } catch (error) {
           // Failure - increment attempts and reschedule or remove
           item.attempts++;
-          item.lastError = error instanceof Error ? error.message : String(error);
+          item.lastError =
+            error instanceof Error ? error.message : String(error);
 
           if (item.attempts >= item.maxAttempts) {
             // Max attempts reached - move to dead letter queue
             await this.redis.zadd(
               "bridge_dead_letter_queue",
               Date.now(),
-              JSON.stringify(item)
+              JSON.stringify(item),
             );
             await this.redis.zrem("bridge_retry_queue", itemStr);
-            console.error(`[retry-queue] item ${item.id} max attempts reached, moved to DLQ`);
+            console.error(
+              `[retry-queue] item ${item.id} max attempts reached, moved to DLQ`,
+            );
           } else {
             // Reschedule with exponential backoff
             const delay = Math.min(
-              this.config.initialDelayMs * Math.pow(this.config.backoffMultiplier, item.attempts - 1),
-              this.config.maxDelayMs
+              this.config.initialDelayMs *
+                Math.pow(this.config.backoffMultiplier, item.attempts - 1),
+              this.config.maxDelayMs,
             );
             item.nextRetryAt = Date.now() + delay;
 
@@ -121,9 +127,11 @@ export class RetryQueue {
             await this.redis.zadd(
               "bridge_retry_queue",
               item.nextRetryAt,
-              JSON.stringify(item)
+              JSON.stringify(item),
             );
-            console.warn(`[retry-queue] item ${item.id} failed, retry ${item.attempts}/${item.maxAttempts} in ${delay}ms`);
+            console.warn(
+              `[retry-queue] item ${item.id} failed, retry ${item.attempts}/${item.maxAttempts} in ${delay}ms`,
+            );
           }
         }
       }
@@ -162,8 +170,12 @@ export class RetryQueue {
    * Get items from dead letter queue for inspection
    */
   async getDeadLetterItems(limit: number = 50): Promise<RetryItem[]> {
-    const items = await this.redis.zrange("bridge_dead_letter_queue", 0, limit - 1);
-    return items.map(itemStr => JSON.parse(itemStr));
+    const items = await this.redis.zrange(
+      "bridge_dead_letter_queue",
+      0,
+      limit - 1,
+    );
+    return items.map((itemStr) => JSON.parse(itemStr));
   }
 
   /**
@@ -171,10 +183,10 @@ export class RetryQueue {
    */
   async requeueFromDeadLetter(itemIds: string[]): Promise<number> {
     let requeued = 0;
-    
+
     for (const id of itemIds) {
       const items = await this.redis.zrange("bridge_dead_letter_queue", 0, -1);
-      
+
       for (const itemStr of items) {
         const item: RetryItem = JSON.parse(itemStr);
         if (item.id === id) {
@@ -182,15 +194,19 @@ export class RetryQueue {
           item.attempts = 0;
           item.nextRetryAt = Date.now();
           item.lastError = undefined;
-          
-          await this.redis.zadd("bridge_retry_queue", item.nextRetryAt, JSON.stringify(item));
+
+          await this.redis.zadd(
+            "bridge_retry_queue",
+            item.nextRetryAt,
+            JSON.stringify(item),
+          );
           await this.redis.zrem("bridge_dead_letter_queue", itemStr);
           requeued++;
           break;
         }
       }
     }
-    
+
     return requeued;
   }
 }

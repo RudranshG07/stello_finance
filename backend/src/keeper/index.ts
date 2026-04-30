@@ -35,10 +35,10 @@ import {
 } from "../staking-engine/contractClient.js";
 import { getLogger, ServiceContext } from "../utils/logger.js";
 
-const KEEPER_INTERVAL_MS = 6 * 60 * 60 * 1000;      // 6 hours
-const TTL_BUMP_INTERVAL_MS = 24 * 60 * 60 * 1000;    // 24 hours
+const KEEPER_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+const TTL_BUMP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const RECALIBRATE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const TIMELOCK_POLL_INTERVAL_MS = 30 * 60 * 1000;    // 30 minutes
+const TIMELOCK_POLL_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 
 const TREASURY_RECYCLE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const TREASURY_RECYCLE_THRESHOLD = BigInt(100_0000000);
@@ -63,10 +63,10 @@ export class KeeperBot {
 
     // Run immediately on startup
     await this.runHarvestCycle().catch((err) =>
-      logger.error("Initial harvest cycle failed", "initialize", {}, err)
+      logger.error("Initial harvest cycle failed", "initialize", {}, err),
     );
     await this.bumpAllContractTTLs().catch((err) =>
-      logger.error("Initial TTL bump failed", "initialize", {}, err)
+      logger.error("Initial TTL bump failed", "initialize", {}, err),
     );
 
     // Schedule harvest cycle every 6h
@@ -74,7 +74,12 @@ export class KeeperBot {
       try {
         await this.runHarvestCycle();
       } catch (err) {
-        logger.error("Harvest cycle error", "harvest-cycle", {}, err);
+        logger.error(
+          "Harvest cycle error",
+          "harvest-cycle",
+          {},
+          err instanceof Error ? err : new Error(String(err)),
+        );
       }
     }, KEEPER_INTERVAL_MS);
 
@@ -83,7 +88,12 @@ export class KeeperBot {
       try {
         await this.bumpAllContractTTLs();
       } catch (err) {
-        logger.error("TTL bump error", "ttl-bump", {}, err);
+        logger.error(
+          "TTL bump error",
+          "ttl-bump",
+          {},
+          err instanceof Error ? err : new Error(String(err)),
+        );
       }
     }, TTL_BUMP_INTERVAL_MS);
 
@@ -92,7 +102,12 @@ export class KeeperBot {
       try {
         await this.recalibrateStakingRate();
       } catch (err) {
-        logger.error("Recalibrate error", "recalibrate", {}, err);
+        logger.error(
+          "Recalibrate error",
+          "recalibrate",
+          {},
+          err instanceof Error ? err : new Error(String(err)),
+        );
       }
     }, RECALIBRATE_INTERVAL_MS);
 
@@ -101,7 +116,12 @@ export class KeeperBot {
       try {
         await this.recycleTreasury();
       } catch (err) {
-        logger.error("Treasury recycle error", "treasury-recycle", {}, err);
+        logger.error(
+          "Treasury recycle error",
+          "treasury-recycle",
+          {},
+          err instanceof Error ? err : new Error(String(err)),
+        );
       }
     }, TREASURY_RECYCLE_INTERVAL_MS);
 
@@ -110,7 +130,12 @@ export class KeeperBot {
       try {
         await this.executeMaturedTimelocks();
       } catch (err) {
-        logger.error("Timelock poll error", "timelock-poll", {}, err);
+        logger.error(
+          "Timelock poll error",
+          "timelock-poll",
+          {},
+          err instanceof Error ? err : new Error(String(err)),
+        );
       }
     }, TIMELOCK_POLL_INTERVAL_MS);
 
@@ -122,17 +147,32 @@ export class KeeperBot {
         ttlBumpIntervalHours: TTL_BUMP_INTERVAL_MS / 3_600_000,
         recalibrateIntervalHours: RECALIBRATE_INTERVAL_MS / 3_600_000,
         treasuryRecycleIntervalHours: TREASURY_RECYCLE_INTERVAL_MS / 3_600_000,
-        timelockPollIntervalMinutes: TIMELOCK_POLL_INTERVAL_MS / 60_000
-      }
+        timelockPollIntervalMinutes: TIMELOCK_POLL_INTERVAL_MS / 60_000,
+      },
     );
   }
 
   async shutdown(): Promise<void> {
-    if (keeperInterval) { clearInterval(keeperInterval); keeperInterval = null; }
-    if (ttlInterval) { clearInterval(ttlInterval); ttlInterval = null; }
-    if (recalibrateInterval) { clearInterval(recalibrateInterval); recalibrateInterval = null; }
-    if (treasuryRecycleInterval) { clearInterval(treasuryRecycleInterval); treasuryRecycleInterval = null; }
-    if (timelockPollInterval) { clearInterval(timelockPollInterval); timelockPollInterval = null; }
+    if (keeperInterval) {
+      clearInterval(keeperInterval);
+      keeperInterval = null;
+    }
+    if (ttlInterval) {
+      clearInterval(ttlInterval);
+      ttlInterval = null;
+    }
+    if (recalibrateInterval) {
+      clearInterval(recalibrateInterval);
+      recalibrateInterval = null;
+    }
+    if (treasuryRecycleInterval) {
+      clearInterval(treasuryRecycleInterval);
+      treasuryRecycleInterval = null;
+    }
+    if (timelockPollInterval) {
+      clearInterval(timelockPollInterval);
+      timelockPollInterval = null;
+    }
     logger.info("Keeper Bot shut down", "shutdown");
   }
 
@@ -161,11 +201,13 @@ export class KeeperBot {
           accrued,
           "XLM",
           "collect-fees",
-          { source: "lp-pool" }
+          { source: "lp-pool" },
         );
       }
     } catch (err) {
-      logger.warn("LP protocol fee collection failed", "collect-fees", { error: err instanceof Error ? err.message : String(err) });
+      logger.warn("LP protocol fee collection failed", "collect-fees", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     // Step 3: Harvest lending interest
@@ -176,7 +218,7 @@ export class KeeperBot {
         pendingInterest,
         "XLM",
         "check-interest",
-        { pendingInterest: pendingInterest.toString() }
+        { pendingInterest: pendingInterest.toString() },
       );
       harvested = await this.harvestLendingInterest(pendingInterest);
       if (harvested > BigInt(0)) {
@@ -185,7 +227,7 @@ export class KeeperBot {
           harvested,
           "XLM",
           "harvest-interest",
-          { harvested: harvested.toString() }
+          { harvested: harvested.toString() },
         );
       }
     }
@@ -193,7 +235,9 @@ export class KeeperBot {
     // Step 4: Pipe total yield to add_rewards
     const totalYield = harvested + lpProtocolFees;
     if (totalYield <= BigInt(0)) {
-      logger.info("No yield to distribute", "harvest-cycle", { totalYield: "0" });
+      logger.info("No yield to distribute", "harvest-cycle", {
+        totalYield: "0",
+      });
       return;
     }
 
@@ -207,15 +251,20 @@ export class KeeperBot {
         {
           harvestedXLM: harvested.toString(),
           lpFeesXLM: lpProtocolFees.toString(),
-          totalYieldXLM: totalYield.toString()
-        }
+          totalYieldXLM: totalYield.toString(),
+        },
       );
     } catch (err) {
-      logger.error("add_rewards failed", "add-rewards", { totalYield: totalYield.toString() }, err instanceof Error ? err : new Error(String(err)));
+      logger.error(
+        "add_rewards failed",
+        "add-rewards",
+        { totalYield: totalYield.toString() },
+        err instanceof Error ? err : new Error(String(err)),
+      );
       logger.error(
         "Manual action required: call add_rewards",
         "manual-action",
-        { totalYieldStroops: totalYield.toString() }
+        { totalYieldStroops: totalYield.toString() },
       );
     }
   }
@@ -229,11 +278,15 @@ export class KeeperBot {
       const result = await this.simulateView(
         config.contracts.lendingContractId,
         "total_accrued_interest",
-        []
+        [],
       );
-      return result != null ? BigInt(result as string | number | bigint) : BigInt(0);
+      return result != null
+        ? BigInt(result as string | number | bigint)
+        : BigInt(0);
     } catch (err) {
-      logger.warn("Could not query accrued interest", "query-interest", { error: err instanceof Error ? err.message : String(err) });
+      logger.warn("Could not query accrued interest", "query-interest", {
+        error: err instanceof Error ? err.message : String(err),
+      });
       return BigInt(0);
     }
   }
@@ -247,20 +300,30 @@ export class KeeperBot {
       const hash = await this.executeAdminCall(
         config.contracts.lendingContractId,
         "harvest_interest",
-        []
+        [],
       );
-      logger.transaction("Harvest interest transaction submitted", hash, "harvest-interest");
+      logger.transaction(
+        "Harvest interest transaction submitted",
+        hash,
+        "harvest-interest",
+      );
 
       // The contract harvests min(pending, pool_balance).
       // Re-query after harvest to see how much is left; the difference is what was harvested.
       const pendingAfter = await this.queryLendingAccruedInterest();
-      const harvested = pendingBefore > pendingAfter
-        ? pendingBefore - pendingAfter
-        : pendingBefore; // fallback if query fails
+      const harvested =
+        pendingBefore > pendingAfter
+          ? pendingBefore - pendingAfter
+          : pendingBefore; // fallback if query fails
 
       return harvested;
     } catch (err) {
-      logger.error("harvest_interest failed", "harvest-interest", {}, err instanceof Error ? err : new Error(String(err)));
+      logger.error(
+        "harvest_interest failed",
+        "harvest-interest",
+        {},
+        err instanceof Error ? err : new Error(String(err)),
+      );
       return BigInt(0);
     }
   }
@@ -271,19 +334,27 @@ export class KeeperBot {
 
   async bumpAllContractTTLs(): Promise<void> {
     const contracts = [
-      { name: "sXLM Token",  id: config.contracts.sxlmTokenContractId },
-      { name: "Staking",     id: config.contracts.stakingContractId },
-      { name: "Lending",     id: config.contracts.lendingContractId },
-      { name: "LP Pool",     id: config.contracts.lpPoolContractId },
-      { name: "Governance",  id: config.contracts.governanceContractId },
+      { name: "sXLM Token", id: config.contracts.sxlmTokenContractId },
+      { name: "Staking", id: config.contracts.stakingContractId },
+      { name: "Lending", id: config.contracts.lendingContractId },
+      { name: "LP Pool", id: config.contracts.lpPoolContractId },
+      { name: "Governance", id: config.contracts.governanceContractId },
     ];
 
     for (const c of contracts) {
       try {
         await this.executeAdminCall(c.id, "bump_instance", []);
-        logger.info("TTL bumped successfully", "ttl-bump", { contractName: c.name, contractId: c.id });
+        logger.info("TTL bumped successfully", "ttl-bump", {
+          contractName: c.name,
+          contractId: c.id,
+        });
       } catch (err) {
-        logger.error(`TTL bump failed for ${c.name}`, "ttl-bump", { contractName: c.name, contractId: c.id }, err instanceof Error ? err : new Error(String(err)));
+        logger.error(
+          `TTL bump failed for ${c.name}`,
+          "ttl-bump",
+          { contractName: c.name, contractId: c.id },
+          err instanceof Error ? err : new Error(String(err)),
+        );
         // Non-fatal: log and continue
       }
     }
@@ -298,11 +369,16 @@ export class KeeperBot {
       await this.executeAdminCall(
         config.contracts.stakingContractId,
         "recalibrate_rate",
-        []
+        [],
       );
       logger.info("Staking rate recalibrated", "recalibrate");
     } catch (err) {
-      logger.error("Recalibrate failed", "recalibrate", {}, err instanceof Error ? err : new Error(String(err)));
+      logger.error(
+        "Recalibrate failed",
+        "recalibrate",
+        {},
+        err instanceof Error ? err : new Error(String(err)),
+      );
     }
   }
 
@@ -315,28 +391,30 @@ export class KeeperBot {
       const reserves = await this.simulateView(
         config.contracts.lpPoolContractId,
         "get_reserves",
-        []
+        [],
       );
 
-      const arr = reserves as [string | number | bigint, string | number | bigint] | null;
+      const arr = reserves as
+        | [string | number | bigint, string | number | bigint]
+        | null;
       const xlm = Number(arr?.[0] ?? 0) / 1e7;
       const sxlm = Number(arr?.[1] ?? 0) / 1e7;
       const k = xlm * sxlm;
 
-      const accruedFees = await getLpAccruedProtocolFees().catch(() => BigInt(0));
-
-      logger.info(
-        "LP Pool stats",
-        "lp-stats",
-        {
-          reserveXLM: xlm.toFixed(2),
-          reserveSxlm: sxlm.toFixed(2),
-          constantK: k.toFixed(2),
-          accruedProtocolFeesXLM: Number(accruedFees) / 1e7
-        }
+      const accruedFees = await getLpAccruedProtocolFees().catch(() =>
+        BigInt(0),
       );
+
+      logger.info("LP Pool stats", "lp-stats", {
+        reserveXLM: xlm.toFixed(2),
+        reserveSxlm: sxlm.toFixed(2),
+        constantK: k.toFixed(2),
+        accruedProtocolFeesXLM: Number(accruedFees) / 1e7,
+      });
     } catch (err) {
-      logger.warn("Could not query LP pool stats", "lp-stats", { error: err instanceof Error ? err.message : String(err) });
+      logger.warn("Could not query LP pool stats", "lp-stats", {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -354,8 +432,8 @@ export class KeeperBot {
           "treasury-recycle",
           {
             treasuryBalanceXLM: Number(treasuryBal) / 1e7,
-            thresholdXLM: Number(TREASURY_RECYCLE_THRESHOLD) / 1e7
-          }
+            thresholdXLM: Number(TREASURY_RECYCLE_THRESHOLD) / 1e7,
+          },
         );
         return;
       }
@@ -365,7 +443,7 @@ export class KeeperBot {
         treasuryBal,
         "XLM",
         "treasury-recycle",
-        { action: "withdraw-and-recycle" }
+        { action: "withdraw-and-recycle" },
       );
 
       await callWithdrawFees(treasuryBal);
@@ -374,7 +452,7 @@ export class KeeperBot {
         treasuryBal,
         "XLM",
         "withdraw-fees",
-        { destination: "admin_wallet" }
+        { destination: "admin_wallet" },
       );
 
       await callAddRewards(treasuryBal);
@@ -383,10 +461,15 @@ export class KeeperBot {
         treasuryBal,
         "XLM",
         "add-rewards",
-        { source: "treasury", destination: "stakers" }
+        { source: "treasury", destination: "stakers" },
       );
     } catch (err) {
-      logger.error("Treasury recycle failed", "treasury-recycle", {}, err instanceof Error ? err : new Error(String(err)));
+      logger.error(
+        "Treasury recycle failed",
+        "treasury-recycle",
+        {},
+        err instanceof Error ? err : new Error(String(err)),
+      );
     }
   }
 
@@ -398,7 +481,11 @@ export class KeeperBot {
     const govContractId = config.contracts.governanceContractId;
 
     // Get total proposal count
-    const countRaw = await this.simulateView(govContractId, "proposal_count", []);
+    const countRaw = await this.simulateView(
+      govContractId,
+      "proposal_count",
+      [],
+    );
     const count = Number(countRaw ?? 0);
     if (count === 0) return;
 
@@ -411,30 +498,30 @@ export class KeeperBot {
 
     for (let i = 0; i < Math.min(count, 100); i++) {
       try {
-        const proposal = await this.simulateView(govContractId, "get_proposal", [
-          nativeToScVal(BigInt(i), { type: "u64" }),
-        ]) as any;
+        const proposal = (await this.simulateView(
+          govContractId,
+          "get_proposal",
+          [nativeToScVal(BigInt(i), { type: "u64" })],
+        )) as any;
 
         if (!proposal || proposal.executed || !proposal.queued) continue;
 
-        const entry = await this.simulateView(govContractId, "get_timelock_entry", [
-          nativeToScVal(BigInt(i), { type: "u64" }),
-        ]) as any;
+        const entry = (await this.simulateView(
+          govContractId,
+          "get_timelock_entry",
+          [nativeToScVal(BigInt(i), { type: "u64" })],
+        )) as any;
 
         if (!entry || entry.cancelled) continue;
 
         const eta = Number(entry.eta_ledger ?? 0);
         if (currentLedger < eta) continue;
 
-        logger.info(
-          "Executing matured timelock",
-          "timelock-execute",
-          {
-            proposalId: i,
-            etaLedger: eta,
-            currentLedger: currentLedger
-          }
-        );
+        logger.info("Executing matured timelock", "timelock-execute", {
+          proposalId: i,
+          etaLedger: eta,
+          currentLedger: currentLedger,
+        });
 
         await this.executeAdminCall(govContractId, "execute_queued", [
           nativeToScVal(BigInt(i), { type: "u64" }),
@@ -447,40 +534,70 @@ export class KeeperBot {
           await this.applyGovernanceParam(paramKey, newValue);
         }
 
-        logger.info(
-          "Proposal executed successfully",
+        logger.info("Proposal executed successfully", "timelock-execute", {
+          proposalId: i,
+          paramKey,
+          newValue,
+        });
+      } catch (err) {
+        logger.warn(
+          `Could not process timelock for proposal ${i}`,
           "timelock-execute",
           {
             proposalId: i,
-            paramKey,
-            newValue
-          }
+            error: err instanceof Error ? err.message : String(err),
+          },
         );
-      } catch (err) {
-        logger.warn(`Could not process timelock for proposal ${i}`, "timelock-execute", { proposalId: i, error: err instanceof Error ? err.message : String(err) });
       }
     }
   }
 
-  private async applyGovernanceParam(paramKey: string, newValue: string): Promise<void> {
+  private async applyGovernanceParam(
+    paramKey: string,
+    newValue: string,
+  ): Promise<void> {
     const value = parseInt(newValue, 10);
     if (isNaN(value)) return;
 
-    const { callSetCooldownPeriod, callUpdateCollateralFactor, callUpdateBorrowRate, callUpdateLiquidationThreshold, callSetLpProtocolFeeBps } =
-      await import("../staking-engine/contractClient.js");
+    const {
+      callSetCooldownPeriod,
+      callUpdateCollateralFactor,
+      callUpdateBorrowRate,
+      callUpdateLiquidationThreshold,
+      callSetLpProtocolFeeBps,
+    } = await import("../staking-engine/contractClient.js");
 
     try {
       switch (paramKey) {
-        case "cooldown_period":       await callSetCooldownPeriod(value); break;
-        case "collateral_factor":     await callUpdateCollateralFactor(value); break;
-        case "borrow_rate_bps":       await callUpdateBorrowRate(value); break;
-        case "liquidation_threshold": await callUpdateLiquidationThreshold(value); break;
-        case "lp_protocol_fee_bps":   await callSetLpProtocolFeeBps(value); break;
+        case "cooldown_period":
+          await callSetCooldownPeriod(value);
+          break;
+        case "collateral_factor":
+          await callUpdateCollateralFactor(value);
+          break;
+        case "borrow_rate_bps":
+          await callUpdateBorrowRate(value);
+          break;
+        case "liquidation_threshold":
+          await callUpdateLiquidationThreshold(value);
+          break;
+        case "lp_protocol_fee_bps":
+          await callSetLpProtocolFeeBps(value);
+          break;
         default:
-          logger.info(`Param "${paramKey}" is governance-only, no contract call needed`, "apply-param", { paramKey });
+          logger.info(
+            `Param "${paramKey}" is governance-only, no contract call needed`,
+            "apply-param",
+            { paramKey },
+          );
       }
     } catch (err) {
-      logger.error(`Failed to apply param "${paramKey}"`, "apply-param", { paramKey, value }, err instanceof Error ? err : new Error(String(err)));
+      logger.error(
+        `Failed to apply param "${paramKey}"`,
+        "apply-param",
+        { paramKey, value },
+        err instanceof Error ? err : new Error(String(err)),
+      );
     }
   }
 
@@ -489,7 +606,7 @@ export class KeeperBot {
   private async simulateView(
     contractId: string,
     method: string,
-    args: ReturnType<typeof nativeToScVal>[]
+    args: ReturnType<typeof nativeToScVal>[],
   ): Promise<unknown> {
     const contract = new Contract(contractId);
     const op = contract.call(method, ...args);
@@ -516,7 +633,7 @@ export class KeeperBot {
   private async executeAdminCall(
     contractId: string,
     method: string,
-    args: ReturnType<typeof nativeToScVal>[]
+    args: ReturnType<typeof nativeToScVal>[],
   ): Promise<string> {
     const keypair = Keypair.fromSecret(config.admin.secretKey);
     const account = await this.server.getAccount(keypair.publicKey());
@@ -537,7 +654,9 @@ export class KeeperBot {
 
     const result = await this.server.sendTransaction(preparedTx);
     if (result.status === "ERROR") {
-      throw new Error(`${contractId}::${method} failed: ${JSON.stringify(result.errorResult)}`);
+      throw new Error(
+        `${contractId}::${method} failed: ${JSON.stringify(result.errorResult)}`,
+      );
     }
 
     await this.pollTransaction(result.hash);
@@ -547,7 +666,7 @@ export class KeeperBot {
   private async pollTransaction(
     hash: string,
     maxAttempts = 30,
-    intervalMs = 2000
+    intervalMs = 2000,
   ): Promise<void> {
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const txResponse = await this.server.getTransaction(hash);
@@ -563,6 +682,8 @@ export class KeeperBot {
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    throw new Error(`Transaction ${hash} not confirmed after ${maxAttempts} attempts`);
+    throw new Error(
+      `Transaction ${hash} not confirmed after ${maxAttempts} attempts`,
+    );
   }
 }

@@ -1,0 +1,21 @@
+{"application":"stello-fi-backend","level":"info","message":"Initializing Risk Engine","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:31:06.392","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine initialized successfully","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:31:06.395","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:31:06.395","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Initializing Risk Engine","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:31:06.396","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine initialized successfully","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:31:06.396","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:31:06.396","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:31:06.397","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Initializing Risk Engine","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:31:49.184","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine initialized successfully","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:31:49.186","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:31:49.186","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Initializing Risk Engine","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:31:49.187","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine initialized successfully","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:31:49.187","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:31:49.187","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:31:49.188","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Initializing Risk Engine","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:32:01.789","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine initialized successfully","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:32:01.792","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:32:01.792","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Initializing Risk Engine","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:32:01.793","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine initialized successfully","operation":"initialize","service":"risk-engine","timestamp":"2026-04-30 19:32:01.793","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:32:01.793","version":"1.0.0"}
+{"application":"stello-fi-backend","level":"info","message":"Risk Engine shut down","operation":"shutdown","service":"risk-engine","timestamp":"2026-04-30 19:32:01.793","version":"1.0.0"}
