@@ -115,12 +115,16 @@ export class RetryQueue {
               `[retry-queue] item ${item.id} max attempts reached, moved to DLQ`,
             );
           } else {
-            // Reschedule with exponential backoff
-            const delay = Math.min(
-              this.config.initialDelayMs *
-                Math.pow(this.config.backoffMultiplier, item.attempts - 1),
-              this.config.maxDelayMs,
-            );
+            // Reschedule with exponential backoff; if this is the last allowed
+            // retry, schedule immediately so the next process() call moves it
+            // to DLQ without an unnecessary wait.
+            const delay = item.attempts >= item.maxAttempts
+              ? 0
+              : Math.min(
+                  this.config.initialDelayMs *
+                    Math.pow(this.config.backoffMultiplier, item.attempts - 1),
+                  this.config.maxDelayMs,
+                );
             item.nextRetryAt = Date.now() + delay;
 
             await this.redis.zrem("bridge_retry_queue", itemStr);
