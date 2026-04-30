@@ -226,6 +226,9 @@ xlmLR/
 - **Backend:** `backend/nixpacks.toml` defines build and start (Prisma generate, build, migrate deploy, then `node dist/index.js`). Use with Nixpacks or adapt for your platform.
 - **Frontend:** Build with `npm run build` and serve the `dist/` output with any static host; set `VITE_API_URL` to your backend URL.
 - **Contracts:** Deploy each contract to your target Stellar network and record contract IDs in backend and frontend env.
+## CI/CD
+<img width="714" height="117" alt="image" src="https://github.com/user-attachments/assets/f3651e9c-0192-479d-99aa-d3eb0d2aff58" />
+<img width="1470" height="838" alt="image" src="https://github.com/user-attachments/assets/055c1c1a-6190-450f-812d-454a09b6e5a1" />
 
 ---
 
