@@ -129,9 +129,11 @@ fn read_beneficiary_schedule_ids(env: &Env, beneficiary: &Address) -> Vec<u64> {
         .get(&key)
         .unwrap_or_else(|| Vec::new(env));
     if !list.is_empty() {
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, SCHEDULE_LIFETIME_THRESHOLD, SCHEDULE_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            SCHEDULE_LIFETIME_THRESHOLD,
+            SCHEDULE_BUMP_AMOUNT,
+        );
     }
     list
 }
@@ -214,6 +216,7 @@ impl VestingContract {
     ///
     /// Constraints:
     ///   start_ledger ≤ cliff_ledger < end_ledger
+    #[allow(clippy::too_many_arguments)]
     pub fn create_schedule(
         env: Env,
         caller: Address,
@@ -434,8 +437,7 @@ mod tests {
         StellarAssetClient::new(&env, &token_address).mint(&admin, &10_000_0000000);
 
         // Deploy vesting contract
-        let vesting_id = env.register(VestingContract, ());
-        let vesting_address = vesting_id.address();
+        let vesting_address = env.register_contract(None, VestingContract);
 
         // Approve vesting contract to pull tokens from admin (or admin will transfer directly)
 
@@ -473,7 +475,7 @@ mod tests {
             &token,
             &1_000_0000000,
             &ledger_now,
-            &(ledger_now + 100),  // cliff after 100 ledgers
+            &(ledger_now + 100),   // cliff after 100 ledgers
             &(ledger_now + 1_000), // fully vested after 1000 ledgers
             &true,
         );
@@ -593,8 +595,14 @@ mod tests {
         let end: u32 = 500;
 
         let id = vesting.create_schedule(
-            &admin, &beneficiary, &token,
-            &1_000_0000000, &start, &start, &end, &false,
+            &admin,
+            &beneficiary,
+            &token,
+            &1_000_0000000,
+            &start,
+            &start,
+            &end,
+            &false,
         );
 
         env.ledger().with_mut(|li| li.sequence_number = 999);
@@ -612,8 +620,14 @@ mod tests {
         let end: u32 = 1_000;
 
         let id = vesting.create_schedule(
-            &admin, &beneficiary, &token,
-            &1_000_0000000, &start, &start, &end, &true,
+            &admin,
+            &beneficiary,
+            &token,
+            &1_000_0000000,
+            &start,
+            &start,
+            &end,
+            &true,
         );
 
         // At ledger 200 → 20% vested
@@ -640,8 +654,14 @@ mod tests {
         vesting.initialize(&admin);
 
         let id = vesting.create_schedule(
-            &admin, &beneficiary, &token,
-            &1_000_0000000, &0, &0, &1_000, &false, // revocable = false
+            &admin,
+            &beneficiary,
+            &token,
+            &1_000_0000000,
+            &0,
+            &0,
+            &1_000,
+            &false, // revocable = false
         );
         vesting.revoke(&admin, &id);
     }
@@ -654,8 +674,14 @@ mod tests {
         vesting.initialize(&admin);
 
         let id = vesting.create_schedule(
-            &admin, &beneficiary, &token,
-            &1_000_0000000, &0, &0, &1_000, &true,
+            &admin,
+            &beneficiary,
+            &token,
+            &1_000_0000000,
+            &0,
+            &0,
+            &1_000,
+            &true,
         );
         vesting.revoke(&admin, &id);
         vesting.revoke(&admin, &id);
@@ -669,8 +695,14 @@ mod tests {
         vesting.initialize(&admin);
 
         let id = vesting.create_schedule(
-            &admin, &beneficiary, &token,
-            &1_000_0000000, &0, &500, &1_000, &false,
+            &admin,
+            &beneficiary,
+            &token,
+            &1_000_0000000,
+            &0,
+            &500,
+            &1_000,
+            &false,
         );
         // ledger 0 < cliff 500 → panic
         vesting.claim(&beneficiary, &id);
@@ -684,8 +716,14 @@ mod tests {
         vesting.initialize(&admin);
 
         let id = vesting.create_schedule(
-            &admin, &beneficiary, &token,
-            &1_000_0000000, &0, &0, &1_000, &false,
+            &admin,
+            &beneficiary,
+            &token,
+            &1_000_0000000,
+            &0,
+            &0,
+            &1_000,
+            &false,
         );
 
         let stranger = Address::generate(&env);
@@ -700,12 +738,24 @@ mod tests {
         vesting.initialize(&admin);
 
         let id0 = vesting.create_schedule(
-            &admin, &beneficiary, &token,
-            &100_0000000, &0, &0, &100, &false,
+            &admin,
+            &beneficiary,
+            &token,
+            &100_0000000,
+            &0,
+            &0,
+            &100,
+            &false,
         );
         let id1 = vesting.create_schedule(
-            &admin, &beneficiary, &token,
-            &200_0000000, &0, &0, &200, &true,
+            &admin,
+            &beneficiary,
+            &token,
+            &200_0000000,
+            &0,
+            &0,
+            &200,
+            &true,
         );
 
         let ids = vesting.get_schedules(&beneficiary);
@@ -722,10 +772,12 @@ mod tests {
         vesting.initialize(&admin);
 
         vesting.create_schedule(
-            &admin, &beneficiary, &token,
+            &admin,
+            &beneficiary,
+            &token,
             &1_000_0000000,
-            &100,  // start
-            &50,   // cliff < start → panic
+            &100, // start
+            &50,  // cliff < start → panic
             &500,
             &false,
         );
@@ -739,7 +791,9 @@ mod tests {
         vesting.initialize(&admin);
 
         vesting.create_schedule(
-            &admin, &beneficiary, &token,
+            &admin,
+            &beneficiary,
+            &token,
             &1_000_0000000,
             &0,
             &500, // cliff

@@ -208,6 +208,7 @@ pub struct LendingContract;
 #[contractimpl]
 impl LendingContract {
     /// Initialize the lending contract. Registers sXLM as the first supported collateral.
+    #[allow(clippy::too_many_arguments)]
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -370,10 +371,8 @@ impl LendingContract {
             .instance()
             .set(&DataKey::AssetCfg(sxlm_asset), &config);
 
-        env.events().publish(
-            (Symbol::new(&env, "sync_price"),),
-            live_price,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "sync_price"),), live_price);
     }
 
     /// Update the borrow rate. Only callable by admin.
@@ -719,7 +718,6 @@ impl LendingContract {
 
 #[cfg(test)]
 // mod integration_tests; // TODO: rewrite with Address::generate + env.register_contract (SDK 21.x)
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -757,7 +755,15 @@ mod test {
 
         // Initialize: sXLM CF=70%, LT=80%, borrow rate=5%
         let staking_id = Address::generate(&env);
-        client.initialize(&admin, &sxlm_id, &native_id, &7000, &8000, &500, &staking_id);
+        client.initialize(
+            &admin,
+            &sxlm_id,
+            &native_id,
+            &7000,
+            &8000,
+            &500,
+            &staking_id,
+        );
 
         // Mint initial balances
         StellarAssetClient::new(&env, &sxlm_id).mint(&user, &100_000_0000000);

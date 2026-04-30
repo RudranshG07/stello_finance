@@ -53,56 +53,6 @@ mod sxlm_token {
 
 use sxlm_token::SxlmTokenClient;
 
-// ---------- Mock Token Contract for Testing ----------
-#[contract]
-struct MockTokenContract;
-
-#[contractimpl]
-impl MockTokenContract {
-    pub fn initialize(env: Env, admin: Address) {
-        env.storage().instance().set(&DataKey::Admin, &admin);
-    }
-    
-    pub fn mint(env: Env, to: Address, amount: i128) {
-        let current_balance = Self::balance(env, to.clone());
-        env.storage()
-            .persistent()
-            .set(&DataKey::Nonce(to), &(current_balance + amount));
-    }
-    
-    pub fn burn(env: Env, from: Address, amount: i128) {
-        let current_balance = Self::balance(env, from.clone());
-        if current_balance < amount {
-            panic!("insufficient balance");
-        }
-        env.storage()
-            .persistent()
-            .set(&DataKey::Nonce(from), &(current_balance - amount));
-    }
-    
-    pub fn balance(env: Env, id: Address) -> i128 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Nonce(id))
-            .unwrap_or(0i128)
-    }
-}
-
-mod mock_token {
-    use soroban_sdk::{contractclient, Address, Env};
-
-    #[allow(dead_code)]
-    #[contractclient(name = "MockTokenClient")]
-    pub trait MockToken {
-        fn initialize(env: Env, admin: Address);
-        fn mint(env: Env, to: Address, amount: i128);
-        fn burn(env: Env, from: Address, amount: i128);
-        fn balance(env: Env, id: Address) -> i128;
-    }
-}
-
-use mock_token::MockTokenClient;
-
 // ---------- Storage helpers ----------
 
 fn extend_instance(env: &Env) {
@@ -441,7 +391,51 @@ impl BridgeAdapter {
 mod test {
     use super::*;
     use soroban_sdk::testutils::Address as _;
-    use soroban_sdk::{Bytes, Env};
+    use soroban_sdk::{contractclient, Bytes, Env};
+
+    // ---------- Mock Token Contract (test-only) ----------
+    #[contract]
+    struct MockTokenContract;
+
+    #[contractimpl]
+    impl MockTokenContract {
+        pub fn initialize(env: Env, admin: Address) {
+            env.storage().instance().set(&DataKey::Admin, &admin);
+        }
+
+        pub fn mint(env: Env, to: Address, amount: i128) {
+            let current_balance = Self::balance(env.clone(), to.clone());
+            env.storage()
+                .persistent()
+                .set(&DataKey::Nonce(to), &(current_balance + amount));
+        }
+
+        pub fn burn(env: Env, from: Address, amount: i128) {
+            let current_balance = Self::balance(env.clone(), from.clone());
+            if current_balance < amount {
+                panic!("insufficient balance");
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::Nonce(from), &(current_balance - amount));
+        }
+
+        pub fn balance(env: Env, id: Address) -> i128 {
+            env.storage()
+                .persistent()
+                .get(&DataKey::Nonce(id))
+                .unwrap_or(0i128)
+        }
+    }
+
+    #[allow(dead_code)]
+    #[contractclient(name = "MockTokenClient")]
+    trait MockToken {
+        fn initialize(env: Env, admin: Address);
+        fn mint(env: Env, to: Address, amount: i128);
+        fn burn(env: Env, from: Address, amount: i128);
+        fn balance(env: Env, id: Address) -> i128;
+    }
 
     // Helper: create a fake 20-byte EVM address
     fn evm_addr(env: &Env) -> Bytes {
@@ -605,13 +599,13 @@ mod test {
         let sxlm_contract_id = env.register_contract(None, MockTokenContract);
         let sxlm_client = MockTokenClient::new(&env, &sxlm_contract_id);
         sxlm_client.initialize(&admin);
-        
+
         // Update bridge to use the mock sXLM contract
         client.set_sxlm_contract(&sxlm_contract_id);
-        
+
         // First successful call
         client.release_from_evm(&recipient, &10_0000000i128, &hash, &CHAIN_ARBITRUM);
-        
+
         // Verify the mint was called
         assert_eq!(sxlm_client.balance(&recipient), 10_0000000i128);
 

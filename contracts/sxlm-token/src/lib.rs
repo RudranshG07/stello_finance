@@ -311,7 +311,6 @@ impl SxlmToken {
 
 #[cfg(test)]
 // mod integration_tests; // TODO: rewrite with Address::generate + env.register_contract (SDK 21.x)
-
 #[cfg(test)]
 mod test {
     use super::*;

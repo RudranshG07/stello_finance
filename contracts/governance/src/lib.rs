@@ -275,9 +275,7 @@ impl GovernanceContract {
         let admin = read_admin(&env);
         admin.require_auth();
         extend_instance(&env);
-        env.storage()
-            .instance()
-            .set(&DataKey::Guardian, &guardian);
+        env.storage().instance().set(&DataKey::Guardian, &guardian);
     }
 
     /// Create a new governance proposal. Proposer must hold minimum sXLM balance.
@@ -597,7 +595,6 @@ impl GovernanceContract {
 
 #[cfg(test)]
 // mod integration_tests; // TODO: rewrite with Address::generate + env.register_contract (SDK 21.x)
-
 #[cfg(test)]
 mod test {
     use super::*;

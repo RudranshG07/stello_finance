@@ -679,7 +679,11 @@ impl LpPoolContract {
         write_i128(&env, &DataKey::ReserveXlm, reserve_xlm - xlm_out);
 
         let accrued = read_i128(&env, &DataKey::AccruedProtocolFeesSxlm);
-        write_i128(&env, &DataKey::AccruedProtocolFeesSxlm, accrued + protocol_cut);
+        write_i128(
+            &env,
+            &DataKey::AccruedProtocolFeesSxlm,
+            accrued + protocol_cut,
+        );
 
         env.events().publish(
             (soroban_sdk::symbol_short!("swap"),),
@@ -731,11 +735,7 @@ impl LpPoolContract {
         }
 
         let sxlm = read_sxlm_token(&env);
-        token::Client::new(&env, &sxlm).transfer(
-            &env.current_contract_address(),
-            &admin,
-            &accrued,
-        );
+        token::Client::new(&env, &sxlm).transfer(&env.current_contract_address(), &admin, &accrued);
 
         write_i128(&env, &DataKey::AccruedProtocolFeesSxlm, 0);
 
@@ -803,7 +803,6 @@ impl LpPoolContract {
 
 #[cfg(test)]
 // mod integration_tests; // TODO: rewrite with Address::generate + env.register_contract (SDK 21.x)
-
 #[cfg(test)]
 mod test {
     use super::*;
@@ -985,7 +984,10 @@ mod test {
         client.swap_sxlm_to_xlm(&user, &10_000_0000000, &0);
 
         let accrued = client.accrued_protocol_fees_sxlm();
-        assert!(accrued > 0, "sXLM protocol fees should accrue on sXLM→XLM swap");
+        assert!(
+            accrued > 0,
+            "sXLM protocol fees should accrue on sXLM→XLM swap"
+        );
         // fee = 10_000 × 0.3% = 30 sXLM; protocol cut = 30 × 5/30 = 5 sXLM
         assert_eq!(accrued, 5_0000000);
         // XLM protocol fees should remain 0 (only sXLM fees accrue here)
