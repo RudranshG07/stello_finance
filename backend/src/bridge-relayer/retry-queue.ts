@@ -103,7 +103,7 @@ export class RetryQueue {
           item.lastError =
             error instanceof Error ? error.message : String(error);
 
-          if (item.attempts >= item.maxAttempts) {
+          if (item.attempts > item.maxAttempts) {
             // Max attempts reached - move to dead letter queue
             await this.redis.zadd(
               "bridge_dead_letter_queue",
